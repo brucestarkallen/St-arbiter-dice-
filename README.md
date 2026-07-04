@@ -83,9 +83,13 @@ Fully automatic. Manual controls:
 - `/arbseed` — rebuild the capability sheet from the story.
 - Inline tags (configurable): put `[roll]` in a message to force, `[skip]` to skip.
 
-**Swipes and regenerates re-use the committed outcome.** The narration rerolls;
-the result doesn't. No re-roll fishing. `/arb` before a resend explicitly
-re-adjudicates if you truly want a fresh check.
+**Same action = same fate.** Swipes and regenerates of an unchanged message
+replay the committed outcome — the narration rerolls, the result doesn't, so
+the model can never be fished into a win. **Changed action = new attempt.**
+Edit your message (even before a regenerate) and Arbiter rolls fresh at fair
+odds — retrying is your save-point choice, and you can still lose. `/arb`
+re-adjudicates the same message; `/arbskip` commits a no-check verdict that
+persists across swipes.
 
 ## Capability sheet
 

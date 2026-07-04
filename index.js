@@ -630,20 +630,31 @@
         if (tagForce && genType === 'normal') force = true;
 
         if (skipFlag || tagSkip) {
-            dlog('skip requested; no adjudication for this message');
-            if (meta.cache?.key === key) { meta.cache = null; saveMeta(); }
+            dlog('skip requested; committing a no-check verdict for this message');
+            meta.cache = { key, directive: '', tier: null };
+            saveMeta();
             return;
         }
 
-        // Same triggering user message as before (swipe / regenerate /
-        // retry / continue): re-use the committed outcome. No re-rolls.
-        if (!force && meta.cache && meta.cache.key === key && meta.cache.directive) {
-            dlog('cache hit — re-injecting committed outcome (' + genType + ')');
-            setInjection(meta.cache.directive);
+        // Same triggering user message as the committed decision: replay it.
+        // Swiping/regenerating rerolls the PROSE, never the FATE — the only
+        // ways past a committed decision are /arb (explicit re-adjudication)
+        // or editing the action itself (handled below).
+        if (!force && meta.cache && meta.cache.key === key) {
+            if (meta.cache.directive) {
+                dlog('cache hit — re-injecting committed outcome (' + genType + ')');
+                setInjection(meta.cache.directive);
+            } else {
+                dlog('cache hit — committed no-check verdict stands (' + genType + ')');
+            }
             return;
         }
 
-        if (genType !== 'normal' && !force) return; // never roll fresh on a swipe
+        // Reaching here on a swipe/regenerate means the player EDITED their
+        // action (key mismatch) or nothing was ever committed for it. An
+        // edited action is a NEW attempt and gets a fresh, fair roll.
+        // Player-initiated retries are a save-point choice, not model
+        // sycophancy — the odds never bend, only the dice recast.
 
         if (!force && !gatePasses(raw)) {
             dlog('gate: no check plausible');
