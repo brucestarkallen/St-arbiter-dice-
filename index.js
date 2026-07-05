@@ -677,7 +677,8 @@
         ' "why": "<one short clause justifying circumstance>",',
         ' "stakes": "<what success or failure means here, one short clause>",',
         ' "duel_start": null | "<opponent name — set this whenever the action opens physical combat against ONE named person: a strike, a draw, a lunge, an attack with a weapon or power, even if you expect it to be quick or one-sided. When in doubt between a single check and a duel for an attack on a person, prefer the duel.>",',
-        ' "opponent_rating": null | <integer 0-10 — set ONLY when you also set duel_start or battle_start AND the opponent is NOT already in the sheet. Estimate the opponent combat capability from the recent scene and any description present, on this scale: 2 untrained, 4 trained, 5 competent professional, 6 veteran, 7 elite, 8 master, 9 legendary, 10 apex-of-setting. A described unbeaten S-tier warlord is 9-10; a trembling farmhand is 2. Leave null if the opponent is already in the sheet or you have no basis to estimate.>",',
+        ' "opponent_rating": null | <integer 0-10 — set ONLY when you also set duel_start or battle_start AND the opponent is NOT already in the sheet. Estimate combat capability from the scene and description. Scale (by effective threat, NOT species): 2 untrained, 4 trained, 5 competent professional, 6 veteran, 7 elite, 8 master, 9 legendary, 10 apex. This applies to ANY combatant — a person, beast, dragon, alien, machine, or monster — rated by how dangerous it actually is: a feral dog 3, a trained warhound 5, a dire beast 7, an ancient dragon or apex monster 9-10. When a creature is so far beyond human scale that raw skill barely matters, rate it 10 AND set scale_mismatch below.>",',
+        ' "scale_mismatch": null | <integer -4..4 — set ONLY in combat where the two sides are CATEGORICALLY mismatched in size, mass, or power (a human vs a dragon, a footsoldier vs a war-mech, a child vs a bear). This is an ADDITIONAL swing on top of ratings, representing that skill alone cannot close the gap. From the PLAYER\'s perspective: strongly negative when the player is hopelessly outmatched by something vast (a normal human attacking a dragon head-on: -3 or -4), strongly positive when the player is the vast one crushing something tiny. 0 or null when both sides are roughly the same scale (human vs human, dragon vs dragon), even if their skill differs. An equalizer in the fiction — a dragon-slaying spear, a mech of their own, a weak point exposed — reduces the magnitude.>",',
         ' "condition_change": null | {"who": "<player or a named character>", "add": "<short lasting condition just established in the fiction, e.g. broken left arm, poisoned, exhausted, blinded in one eye, cursed — or null>", "remove": "<a prior lasting condition the fiction just healed/resolved, or null>", "mod": <integer -4..2, the effect on their capability while it lasts; a handicap is negative, e.g. broken arm -2, mild poison -1; only used with add>}. Set this the moment the story establishes or heals a PERSISTENT condition (one that lasts beyond this scene), NOT for fleeting in-fight poise damage. Leave null when nothing persistent changed.',
         ' "battle_start": null | {"allies": ["<name>", ...], "enemies": ["<name or generic squad like Guard x3>", ...]} — set this when combat begins against MULTIPLE opponents at once, OR when the player attacks/affects a GROUP (e.g. "sweep through the guards", "hit all of them"). If the opponents are unnamed, invent a fitting generic squad with a count (e.g. "Guard x3", "Bandit x4"). List allies EXCLUDING the player. This is for skirmish-scale group combat (a handful per side), NOT army-scale warfare.},',
         ' "war_start": null | {"allies": ["<formation, e.g. Left Flank, 3rd Cavalry, Zero Squadron>", ...], "enemies": ["<enemy formation>", ...], "enemy_commander": "<name or null>"} — set when the player takes COMMAND of army-scale combat: leading forces, issuing orders to units/formations/squadrons. Invent sensible formation names from the fiction if unnamed (2-5 per side).,',
@@ -758,6 +759,7 @@
             kind,
             opposition,
             circumstance: clamp(Math.round(Number(obj.circumstance) || 0), -3, 3),
+            scale_mismatch: (obj.scale_mismatch === null || obj.scale_mismatch === undefined) ? 0 : clamp(Math.round(Number(obj.scale_mismatch)), -4, 4),
             why: String(obj.why || '').slice(0, 160),
             stakes: String(obj.stakes || '').slice(0, 160),
             duel_start: duelStart,
@@ -1566,7 +1568,7 @@
         return clamp(fallbackPoise, 1, 20);
     }
 
-    function startDuel(meta, playerName, oppName, domain, oppEstimate) {
+    function startDuel(meta, playerName, oppName, domain, oppEstimate, scaleMismatch) {
         const s = getSettings();
         const fallback = clamp(s.defaultRating, 0, 10);
         const pEntry = findActor(meta, playerName);
@@ -1584,10 +1586,11 @@
             victor: null,
             round: 0,
             domain: d,
+            scaleMismatch: clamp(Math.round(Number(scaleMismatch) || 0), -4, 4),
             player: { name: playerName, rating: ratingFor(pEntry, d, fallback), poise: pPoise, maxPoise: pPoise, injuries: 0, momentum: 0, opening: false },
             opp: { name: oppName, rating: oppRating, poise: oPoise, maxPoise: oPoise, injuries: 0, momentum: 0, opening: false, estimated: !oEntry && Number.isFinite(oppEstimate) },
         };
-        dlog('duel started:', playerName, 'vs', oppName, '(' + d + ') opp rating', oppRating, oEntry ? '(sheet)' : (Number.isFinite(oppEstimate) ? '(estimated)' : '(fallback)'));
+        dlog('duel started:', playerName, 'vs', oppName, '(' + d + ') opp rating', oppRating, 'scale', meta.duel.scaleMismatch, oEntry ? '(sheet)' : (Number.isFinite(oppEstimate) ? '(estimated)' : '(fallback)'));
         return meta.duel;
     }
 
@@ -1662,7 +1665,7 @@
 
         const effP = duel.player.rating - duel.player.injuries + duel.player.momentum + openingBonus;
         const effO = duel.opp.rating - duel.opp.injuries + duel.opp.momentum;
-        const delta = clamp(effP - effO + circumstance + preset.bonus, -13, 13);
+        const delta = clamp(effP - effO + circumstance + (duel.scaleMismatch || 0) + preset.bonus, -13, 13);
         const P = probFromDelta(delta);
         const u = rngFloat();
         const tier = tieCheck(sliceOutcome(P, u, preset.mods), P, u, getSettings().tieBand);
@@ -1812,7 +1815,7 @@
         }
 
         const preset = getPreset();
-        const delta = clamp(aR - oR + adj.circumstance + preset.bonus, -13, 13);
+        const delta = clamp(aR - oR + adj.circumstance + (adj.scale_mismatch || 0) + preset.bonus, -13, 13);
         const P = probFromDelta(delta);
         const u = rngFloat();
         const tier = sliceOutcome(P, u, preset.mods);
@@ -2228,7 +2231,7 @@
                     autoSeedRunning = true;
                     Promise.resolve(seedSheet({ auto: true })).finally(() => { autoSeedRunning = false; });
                 }
-                startDuel(meta, adj.actor, adj.duel_start, adj.domain, adj.opponent_rating);
+                startDuel(meta, adj.actor, adj.duel_start, adj.domain, adj.opponent_rating, adj.scale_mismatch);
                 const res = resolveDuelExchange(meta, adj.circumstance);
                 const directive = buildDuelDirective(meta, adj, res);
                 setInjection(directive);
@@ -2345,7 +2348,7 @@
         'Schema:',
         '{"actors": {"<Name>": {"default": <0-10>, "domains": {"<domain>": <0-10>, ...}}, ...}}',
         '',
-        'Rating guide: 2 untrained, 4 trained, 5 competent professional, 6 veteran, 7 elite, 8 master, 9 legendary, 10 apex-of-setting.',
+        'Rating guide (by effective threat, ANY kind of combatant — person, beast, monster, machine, alien): 2 untrained, 4 trained, 5 competent professional, 6 veteran, 7 elite, 8 master, 9 legendary, 10 apex. Rate creatures by how dangerous they are, not their species: a feral dog 3, a warhound 5, a dire beast or trained monster 7, an ancient dragon or apex predator 9-10. A domain like "melee" for a beast means its natural weapons (claws, fangs, breath).',
         'Domains are lowercase single words (melee, ranged, stealth, social, athletics, intellect, willpower, pilot, craft — invent others only if the story clearly needs them).',
         'Include the player character AND every named CHARACTER in the story — allies, rivals, mentors, recurring NPCs, and people listed in <known_characters> — not only those active in the recent transcript. A large cast is expected; cover everyone named and do NOT silently drop characters to save space. 2-4 domains per actor is plenty. Rate from evidence in the transcript and memory; when unsure, prefer 4-6. Merge obvious duplicates or aliases into a single entry.',
         'Rate each character at their CURRENT power level as of the latest events. If the story shows someone has trained, leveled up, unlocked new power, or grown stronger since earlier, reflect that higher rating now — a character who was trained (4) and has since become elite should be rated elite (7). The <existing_sheet> shows prior ratings; when the fiction clearly shows growth beyond them, rate the new, higher level.',

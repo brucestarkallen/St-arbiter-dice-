@@ -281,6 +281,21 @@ trade drops both fighters at once. Tune frequency with the **Tie window**
 under Outcome feel (0 disables; 0.06 default; higher = more ties); it affects
 only fighting exchanges, never single checks.
 
+## Any creature, any scale (v0.12.2)
+
+Ratings aren't human-only. The referee rates ANY combatant — person, dragon,
+alien, war-machine, monster — by its effective threat, not its species (a
+feral dog 3, a dire beast 7, an ancient dragon 9-10; a beast's "melee" means
+its claws and breath). And because a dragon isn't just a "legendary human,"
+there's a separate **scale mismatch**: when combatants are categorically
+mismatched in size or power, the referee applies a large swing on top of
+ratings, so charging a dragon head-on as a normal human is near-hopeless
+(but never truly impossible) — while an equalizer in the fiction (a
+dragon-slaying spear, an exposed weak point, a mech of your own) shrinks the
+gap back to a real fight. Same-scale fights (human vs human, dragon vs dragon)
+ignore it and turn on skill alone. Works in both directions: when YOU are the
+vast one, crushing something tiny is near-certain.
+
 ## Injuries & handicaps (v0.12.1)
 
 Two layers of harm. WITHIN a fight, wounds already work — a DECISIVE/DISASTER
