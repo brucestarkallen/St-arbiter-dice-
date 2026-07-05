@@ -359,7 +359,7 @@
         PRESETS, EXCHANGE_EFFECTS, applyExchangeEffects, poiseWord,
         rollEventTick, rollTier, tickThread, ENGINE_DEFAULTS,
         EVENT_TYPES, ENCOUNTER_TYPES, extractJsonCandidates, collectMemoryBlock,
-        STRATAGEM_EFFECTS, tieCheck,
+        STRATAGEM_EFFECTS, tieCheck, ratingFor,
     };
 
     /* ------------------------------------------------------------------ */
@@ -386,6 +386,7 @@
         'rush', 'flank', 'pounce', 'blow', 'blew', 'sever', 'launch', 'sweep', 'swept', 'order', 'ordered',
         'command', 'commanded', 'direct', 'directed', 'rally', 'rallied', 'lead', 'led', 'overwhelm',
         'surround', 'ambush', 'raid', 'storm', 'siege', 'besiege', 'assault', 'engage', 'mow', 'scatter',
+        'cripple', 'maim', 'wound', 'curse', 'hex', 'poison', 'blind', 'break', 'shatter', 'mend', 'heal', 'cleanse', 'cure',
     ].join(', ');
 
     const DEFAULTS = {
@@ -677,6 +678,7 @@
         ' "stakes": "<what success or failure means here, one short clause>",',
         ' "duel_start": null | "<opponent name — set this whenever the action opens physical combat against ONE named person: a strike, a draw, a lunge, an attack with a weapon or power, even if you expect it to be quick or one-sided. When in doubt between a single check and a duel for an attack on a person, prefer the duel.>",',
         ' "opponent_rating": null | <integer 0-10 — set ONLY when you also set duel_start or battle_start AND the opponent is NOT already in the sheet. Estimate the opponent combat capability from the recent scene and any description present, on this scale: 2 untrained, 4 trained, 5 competent professional, 6 veteran, 7 elite, 8 master, 9 legendary, 10 apex-of-setting. A described unbeaten S-tier warlord is 9-10; a trembling farmhand is 2. Leave null if the opponent is already in the sheet or you have no basis to estimate.>",',
+        ' "condition_change": null | {"who": "<player or a named character>", "add": "<short lasting condition just established in the fiction, e.g. broken left arm, poisoned, exhausted, blinded in one eye, cursed — or null>", "remove": "<a prior lasting condition the fiction just healed/resolved, or null>", "mod": <integer -4..2, the effect on their capability while it lasts; a handicap is negative, e.g. broken arm -2, mild poison -1; only used with add>}. Set this the moment the story establishes or heals a PERSISTENT condition (one that lasts beyond this scene), NOT for fleeting in-fight poise damage. Leave null when nothing persistent changed.',
         ' "battle_start": null | {"allies": ["<name>", ...], "enemies": ["<name or generic squad like Guard x3>", ...]} — set this when combat begins against MULTIPLE opponents at once, OR when the player attacks/affects a GROUP (e.g. "sweep through the guards", "hit all of them"). If the opponents are unnamed, invent a fitting generic squad with a count (e.g. "Guard x3", "Bandit x4"). List allies EXCLUDING the player. This is for skirmish-scale group combat (a handful per side), NOT army-scale warfare.},',
         ' "war_start": null | {"allies": ["<formation, e.g. Left Flank, 3rd Cavalry, Zero Squadron>", ...], "enemies": ["<enemy formation>", ...], "enemy_commander": "<name or null>"} — set when the player takes COMMAND of army-scale combat: leading forces, issuing orders to units/formations/squadrons. Invent sensible formation names from the fiction if unnamed (2-5 per side).,',
         ' "army_scale": null | "<short name for the larger conflict — set ONLY when the player is caught in mass warfare WITHOUT commanding it (a soldier or bystander in the melee); if they command, use war_start instead>"}',
@@ -762,8 +764,53 @@
             battle_start: battleStart,
             war_start: normalizeWarStart(obj.war_start),
             opponent_rating: (obj.opponent_rating === null || obj.opponent_rating === undefined) ? null : clamp(Math.round(Number(obj.opponent_rating)), 0, 10),
+            condition_change: normalizeConditionChange(obj.condition_change),
             army_scale: (typeof obj.army_scale === 'string' && obj.army_scale.trim()) ? obj.army_scale.trim().slice(0, 80) : null,
         };
+    }
+
+    function normalizeConditionChange(cc) {
+        if (!cc || typeof cc !== 'object') return null;
+        const who = (typeof cc.who === 'string' && cc.who.trim()) ? cc.who.trim().slice(0, 60) : null;
+        if (!who) return null;
+        const add = (typeof cc.add === 'string' && cc.add.trim()) ? cc.add.trim().slice(0, 80) : null;
+        const remove = (typeof cc.remove === 'string' && cc.remove.trim()) ? cc.remove.trim().slice(0, 80) : null;
+        if (!add && !remove) return null;
+        const mod = clamp(Math.round(Number(cc.mod) || (add ? -1 : 0)), -4, 2);
+        return { who, add, remove, mod };
+    }
+
+    /** Apply a persistent condition change to the sheet, resolving "player"
+     *  to the persona. Creates the actor entry if needed so the condition
+     *  sticks even for someone not yet rated. Returns a note for narration. */
+    function applyConditionChange(meta, cc) {
+        if (!cc) return null;
+        const playerName = ctx().name1 || 'Player';
+        const name = /^(you|player|me|myself)$/i.test(cc.who) ? playerName : cc.who;
+        meta.sheet = meta.sheet || { actors: {} };
+        let entry = findActor(meta, name);
+        if (!entry) { entry = { default: clamp(getSettings().defaultRating, 0, 10), domains: {}, _auto: true, conditions: [] }; meta.sheet.actors[name] = entry; }
+        entry.conditions = Array.isArray(entry.conditions) ? entry.conditions : [];
+        const notes = [];
+        if (cc.remove) {
+            const before = entry.conditions.length;
+            const rl = cc.remove.toLowerCase();
+            entry.conditions = entry.conditions.filter(c => {
+                const cn = String(c.name || '').toLowerCase();
+                return !(cn === rl || cn.includes(rl) || rl.includes(cn));
+            });
+            if (entry.conditions.length < before) notes.push(name + ' recovers from ' + cc.remove);
+        }
+        if (cc.add) {
+            const al = cc.add.toLowerCase();
+            if (!entry.conditions.some(c => String(c.name || '').toLowerCase() === al)) {
+                entry.conditions.push({ name: cc.add, mod: cc.mod });
+                if (entry.conditions.length > 6) entry.conditions.shift();
+                notes.push(name + ' now suffers ' + cc.add + ' (' + (cc.mod >= 0 ? '+' : '') + cc.mod + ' while it lasts)');
+            }
+        }
+        if (!entry.conditions.length) delete entry.conditions;
+        return notes.length ? notes.join('; ') : null;
     }
 
     function normalizeWarStart(ws) {
@@ -1713,15 +1760,32 @@
         return null;
     }
 
+    /** Sum of an actor's persistent conditions (broken arm, curse, poison…).
+     *  Negative numbers handicap; positive could represent a persistent buff.
+     *  Stored on the sheet entry as conditions: [{name, mod}]. Clamped so no
+     *  single character is dragged below the floor by stacking. */
+    function conditionMod(actorEntry) {
+        if (!actorEntry || !Array.isArray(actorEntry.conditions)) return 0;
+        let sum = 0;
+        for (const c of actorEntry.conditions) {
+            const m = Number(c && c.mod);
+            if (Number.isFinite(m)) sum += m;
+        }
+        return clamp(sum, -6, 4);
+    }
+
     function ratingFor(actorEntry, domain, fallback) {
         if (!actorEntry || typeof actorEntry !== 'object') return fallback;
         const domains = actorEntry.domains || {};
         const d = String(domain || '').toLowerCase();
+        let base = fallback;
+        let found = false;
         for (const key of Object.keys(domains)) {
-            if (key.toLowerCase() === d) return clamp(domains[key], 0, 10);
+            if (key.toLowerCase() === d) { base = clamp(domains[key], 0, 10); found = true; break; }
         }
-        if (actorEntry.default !== undefined) return clamp(actorEntry.default, 0, 10);
-        return fallback;
+        if (!found && actorEntry.default !== undefined) base = clamp(actorEntry.default, 0, 10);
+        // Persistent conditions modify the effective rating, floored at 0.
+        return clamp(base + conditionMod(actorEntry), 0, 10);
     }
 
     /** Turn a normalized adjudication into a resolved outcome. Pure-ish: RNG inside. */
@@ -2064,6 +2128,15 @@
                 return;
             }
 
+            // Persistent conditions (handicaps, curses, lasting wounds, or their
+            // healing) established by the fiction — applied before anything else
+            // so the change is reflected from this turn forward.
+            let conditionNote = null;
+            if (adj.condition_change) {
+                conditionNote = applyConditionChange(meta, adj.condition_change);
+                if (conditionNote) { saveMeta(); renderSheet(); dlog('condition:', conditionNote); }
+            }
+
             if (inWar) {
                 if (adj.combat_ended) {
                     endBattle(meta, true);
@@ -2233,7 +2306,7 @@
             }
 
             const res = resolveAdj(adj, meta);
-            const directive = buildDirective(adj, res);
+            const directive = buildDirective(adj, res) + (conditionNote ? '\n[ARBITER — lasting condition] ' + conditionNote + '. Reflect this in the prose; it persists until resolved.' : '');
             setInjection(directive);
 
             commitCache(directive, res.tier);
@@ -3125,8 +3198,7 @@
                 else { toast('warning', 'No active duel to rename. (For battles/wars, edit the roster.)'); }
                 return '';
             }, 'Rename the current duel opponent (fixes a misnamed foe live).'],
-            ['arbforget', (na, text) => {
-                const name = String(text || '').trim();
+            ['arbforget', (na, text) => {                const name = String(text || '').trim();
                 const m = getMeta(); if (!m) return '';
                 if (!name) { toast('warning', 'Usage: /arbforget <name to remove from the sheet>'); return ''; }
                 const actors = m.sheet?.actors || {};
@@ -3138,6 +3210,27 @@
                 toast(removed ? 'success' : 'warning', removed ? 'Removed "' + removed + '" from the sheet.' : 'No sheet entry matched "' + name + '".');
                 return '';
             }, 'Remove a wrongly-added actor (e.g. a place) from the capability sheet.'],
+            ['condition', (na, text) => {
+                // /condition Name | broken arm | -2      → add a handicap
+                // /condition Name | -remove | broken arm → clear one
+                const t = String(text || '').trim();
+                const parts = t.split('|').map(x => x.trim());
+                const m = getMeta(); if (!m) return '';
+                if (parts.length < 2) { toast('warning', 'Usage: /condition <name> | <condition> | <mod, e.g. -2>   ·   or   /condition <name> | -remove | <condition>'); return ''; }
+                const name = parts[0];
+                if (/^-?remove$/i.test(parts[1])) {
+                    const note = applyConditionChange(m, { who: name, remove: parts[2] || '', add: null, mod: 0 });
+                    saveMeta(); renderSheet();
+                    toast(note ? 'success' : 'warning', note || 'No matching condition to remove.');
+                } else {
+                    const cond = parts[1];
+                    const mod = parts.length >= 3 ? clamp(parseInt(parts[2], 10) || -1, -4, 2) : -1;
+                    const note = applyConditionChange(m, { who: name, add: cond, remove: null, mod });
+                    saveMeta(); renderSheet();
+                    toast('success', note || (name + ': ' + cond + ' (' + mod + ')'));
+                }
+                return '';
+            }, 'Set or clear a lasting handicap: /condition Name | broken arm | -2  (or)  /condition Name | -remove | broken arm.'],
             ['arbthreads', () => { seedThreads(); return ''; }, 'Seed World Threads (background currents) from the story.'],
         ];
         let registered = false;

@@ -281,6 +281,20 @@ trade drops both fighters at once. Tune frequency with the **Tie window**
 under Outcome feel (0 disables; 0.06 default; higher = more ties); it affects
 only fighting exchanges, never single checks.
 
+## Injuries & handicaps (v0.12.1)
+
+Two layers of harm. WITHIN a fight, wounds already work — a DECISIVE/DISASTER
+exchange inflicts an injury that subtracts from the fighter's effective rating
+for the rest of that duel (the ✚ on the HUD). ACROSS scenes, characters can
+now carry PERSISTENT conditions — a broken arm, a curse, poison, exhaustion,
+blindness — stored on the sheet as conditions with a modifier that lowers
+their effective rating in every future check until it's healed. The referee
+records a lasting condition the moment the fiction establishes one and clears
+it when the story heals it; you can also set or clear any handicap directly
+with `/condition Name | broken arm | -2` (or `/condition Name | -remove |
+broken arm`). Conditions are visible and editable in the sheet, floor a rating
+at 0, and stack up to a capped total so no one is dragged infinitely negative.
+
 ## Growth-aware updates (v0.12)
 
 The sheet now tracks power growth. No manual setup is needed to start — the
