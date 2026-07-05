@@ -22,7 +22,7 @@
     'use strict';
 
     const MODULE = 'arbiter';
-    const VERSION = '0.10.2';
+    const VERSION = '0.10.3';
     const INJECT_KEY = 'ARBITER_OUTCOME';
     const LOG = '[Arbiter]';
 
@@ -633,7 +633,7 @@
         'Schema:',
         '{"check": true|false,',
         ' "action": "<the attempt, 3-10 words>",',
-        ' "domain": "<one lowercase word, e.g. melee, ranged, stealth, social, athletics, intellect, willpower, pilot, craft>",',
+        ' "domain": "<one lowercase word for the SKILL the act actually uses, chosen by its PHYSICAL nature: a strike, punch, kick, feint, swing, or grapple is melee (never stealth just because it is a feint or sneaky); a shot or throw is ranged; moving unseen is stealth; persuasion/intimidation is social. Prefer a domain the actor has on the sheet when it fits. e.g. melee, ranged, stealth, social, athletics, intellect, willpower, pilot, craft>",',
         ' "actor": "<MUST be exactly the player character named in <player>. Checks are always for the PLAYER attempting the action; second-person you in <action> is the player, never the narrator or storyteller card name>",',
         ' "opposition_kind": "actor" | "tier",',
         ' "opposition": "<a character name from the sheet if a known character opposes; otherwise a task tier: trivial|easy|moderate|hard|extreme, or an unnamed-opponent tier: mook|trained|elite|formidable|inferior|peer|superior>",',
@@ -647,7 +647,8 @@
         '',
         'Rules:',
         '- check=false for dialogue, routine or trivial actions with no meaningful chance of interesting failure, pure narration, OOC talk, or actions attempted by characters other than the player.',
-        '- circumstance rewards concrete tactics, positioning, preparation, and exploited weaknesses (+), and penalizes impairment, bad position, or haste (-). Use 0 when nothing notable applies.',
+        '- circumstance is PHYSICAL tactical advantage ONLY: position, momentum, surprise, preparation, exposure of the target, terrain, impairment, haste. Reward concrete tactics and exploited PHYSICAL weaknesses (+); penalize bad position, impairment, or haste (-). Use 0 when nothing notable applies.',
+        '- NEVER penalize an action for being illegal, dishonorable, a foul, against duel etiquette, unsporting, or immoral, and never mention rules, sanctions, penalties, or disqualification. You do not know this world\'s rules; whether a move is "allowed" is the storyteller\'s to narrate, not yours to score. A dirty tactic that gives a real physical edge (a groin kick, sand in the eyes, a low blow) is a POSITIVE circumstance, not a negative one. Judge only what works, not what is permitted.',
         '- The opponent is WHOEVER the fiction says the player is fighting in <recent>/<action>. Use that name. If they are also on the sheet, use the sheet spelling; if not, still name them from the fiction and set opposition_kind "actor" (they will be rated as trained). NEVER substitute a different sheet name just because it is familiar — the scene\'s named opponent always wins over a sheet entry.',
         '- opposition must be a PERSON or creature the player fights. Never use a place, academy, house, faction, or organization name as the opposition.',
     ].join('\n');
@@ -765,7 +766,8 @@
         '',
         'Rules:',
         '- move_kind "fight": the player personally engages one enemy (use "target"). move_kind "command": the player directs the whole side — orders, tactics, formation, rallying.',
-        '- In an active battle nearly every player turn IS an exchange — the enemy presses regardless. Passive or hesitant turns are exchanges with NEGATIVE circumstance.',
+        '- In an active duel nearly every player turn IS an exchange — the enemy presses regardless. Passive or hesitant turns are exchanges with NEGATIVE circumstance.',
+        '- circumstance is PHYSICAL advantage only (position, momentum, feints that create real openings, exposure). NEVER penalize a move for being a foul, dirty, illegal, dishonorable, or against duel rules, and never mention sanctions or penalties — a dirty move that works (a low blow, a groin kick) is a POSITIVE circumstance. You judge what is effective, not what is permitted; the fiction owns the rules.',
         '- exchange=false only for a genuine lull with no fighting possible.',
         '- circumstance rewards concrete tactics, terrain, exploited weaknesses (+); penalizes impairment, bad position, chaos (-). 0 if nothing notable.',
         '- combat_ended=true ONLY if the fiction has already clearly ended the battle (rout, surrender, separation, scene left combat).',
@@ -1442,6 +1444,7 @@
         '',
         'Rules:',
         '- In an active duel nearly every player turn IS an exchange — the opponent presses regardless. A passive, hesitant, or purely defensive turn is an exchange with NEGATIVE circumstance, not exchange=false.',
+        '- circumstance is PHYSICAL advantage ONLY: position, momentum, a feint that creates a real opening, an exposed target, terrain, impairment, haste. NEVER penalize a move for being a foul, dirty, illegal, dishonorable, unsporting, or against duel etiquette, and NEVER mention rules, sanctions, penalties, or disqualification — you do not know this world\'s rules, and legality is the storyteller\'s to narrate, not yours to score. A dirty move that gives a real physical edge (a groin kick, sand in the eyes, a sucker punch) is a POSITIVE circumstance. Judge only what is effective, never what is permitted.',
         '- exchange=false only for a genuine lull: pure dialogue while circling, with no blows possible.',
         '- circumstance rewards concrete tactics, exploited weaknesses and openings (+); penalizes recklessness noted in the fiction, bad footing, impairment (-). 0 if nothing notable.',
         '- combat_ended=true ONLY if the fiction has already clearly ended the fight (someone fled, yielded, was separated, or the scene left combat).',
