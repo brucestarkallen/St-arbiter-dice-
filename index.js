@@ -22,7 +22,7 @@
     'use strict';
 
     const MODULE = 'arbiter';
-    const VERSION = '0.7.2';
+    const VERSION = '0.7.3';
     const INJECT_KEY = 'ARBITER_OUTCOME';
     const LOG = '[Arbiter]';
 
@@ -325,6 +325,9 @@
         eventEngine: true,        // ambient escalating random events (pity-timer RNG)
         autoSeed: true,           // background sheet/thread seeding — no commands needed
         autoSeedEvery: 50,        // re-read story+memory every N turns to learn new faces
+        seedTranscriptK: 16,      // seed transcript window in thousands of chars (user-tunable)
+        seedMemoryK: 9,           // seed memory block in thousands of chars
+        seedOutTokens: 1500,      // max tokens the seeder may emit (bigger cast → raise)
         encounterTypes: '',       // comma list overriding built-in encounter hooks ('' = defaults)
         duelPoise: 5,             // default poise pool (sheet "poise" per actor overrides)
         showHud: true,
@@ -1014,14 +1017,16 @@
         if (!o.auto) toast('info', 'Reading the story for background currents…', 'Arbiter threads');
         const parts = [];
         let chars = 0;
-        for (let i = chat.length - 1; i >= 0 && chars < 6000; i--) {
+        const ts = getSettings();
+        const tCap = Math.round(clamp(ts.seedTranscriptK, 4, 400) * 1000 * 0.6);
+        for (let i = chat.length - 1; i >= 0 && chars < tCap; i--) {
             const m = chat[i];
             if (!m || !m.mes || m.is_system) continue;
-            const line = (m.name || (m.is_user ? 'Player' : 'AI')) + ': ' + String(m.mes).replace(/\s+/g, ' ').slice(0, 350);
+            const line = (m.name || (m.is_user ? 'Player' : 'AI')) + ': ' + String(m.mes).replace(/\s+/g, ' ').slice(0, 400);
             chars += line.length;
             parts.push(line);
         }
-        const mem = collectMemoryBlock(4000);
+        const mem = collectMemoryBlock(clamp(ts.seedMemoryK, 2, 200) * 1000);
         const existing = meta.threads.map(t => t.name).join(', ') || 'none';
         const out = await callLLM(THREAD_SEED_SYSTEM, (mem.block ? mem.block + '\n\n' : '') + '<existing_threads>' + existing + '</existing_threads>\n\n<transcript>\n' + parts.reverse().join('\n') + '\n</transcript>', 700, 45000);
         let obj = null;
@@ -1701,7 +1706,9 @@
         if (!o.auto) toast('info', 'Reading the story and building the sheet…', 'Arbiter seed');
         const parts = [];
         let chars = 0;
-        for (let i = chat.length - 1; i >= 0 && chars < 16000; i--) {
+        const s = getSettings();
+        const transcriptCap = clamp(s.seedTranscriptK, 4, 400) * 1000;
+        for (let i = chat.length - 1; i >= 0 && chars < transcriptCap; i--) {
             const m = chat[i];
             if (!m || !m.mes || m.is_system) continue;
             const line = (m.name || (m.is_user ? 'Player' : 'AI')) + ': ' + String(m.mes).replace(/\s+/g, ' ').slice(0, 500);
@@ -1712,13 +1719,13 @@
 
         // Memory-aware seeding: memory FIRST (it names the established cast,
         // including characters off-screen right now), then the transcript.
-        const mem = collectMemoryBlock(9000);
+        const mem = collectMemoryBlock(clamp(s.seedMemoryK, 2, 200) * 1000);
         const roster = collectKnownNames(meta, mem);
         const rosterBlock = roster.length ? '<known_characters>\n' + roster.join(', ') + '\n</known_characters>\n\n' : '';
         const userPrompt = '<existing_sheet>\n' + existing + '\n</existing_sheet>\n\n' + rosterBlock + (mem.block ? mem.block + '\n\n' : '') + '<transcript>\n' +
             parts.reverse().join('\n') + '\n</transcript>';
 
-        const out = await callLLM(SEED_SYSTEM, userPrompt, 1500, 60000);
+        const out = await callLLM(SEED_SYSTEM, userPrompt, clamp(s.seedOutTokens, 400, 8000), 60000);
         let obj = null;
         for (const cand of extractJsonCandidates(out, 5)) {
             if (cand && typeof cand.actors === 'object' && cand.actors !== null) { obj = cand; break; }
@@ -1843,6 +1850,12 @@
           <label>Refresh every</label><input id="arb_autoseedevery" type="number" min="10" max="500" class="text_pole arb_num">
         </div>
         <div class="arb_hint">Arbiter builds the capability sheet by itself after a few messages, then quietly re-reads story + memory every N turns — it never overwrites ratings you edited, only adds.</div>
+        <div class="arb_row">
+          <label>Seed transcript (k)</label><input id="arb_seedtk" type="number" min="4" max="400" class="text_pole arb_num">
+          <label>Memory (k)</label><input id="arb_seedmk" type="number" min="2" max="200" class="text_pole arb_num">
+          <label>Out tokens</label><input id="arb_seedout" type="number" min="400" max="8000" step="100" class="text_pole arb_num">
+        </div>
+        <div class="arb_hint">Seeding runs on the adjudicator profile, not your main model, and leans on your memory extensions (which already compress the whole story). Defaults suit a fast small model; if your adjudicator handles big context and you have a large cast, raise these — transcript in thousands of chars, memory block size, and the max the seeder may emit. More input can hurt small models (lost-in-the-middle); output tokens + memory matter most for cast coverage.</div>
       </details>
 
       <details class="arb_group">
@@ -2143,6 +2156,9 @@
         $('#arb_eventengine').prop('checked', !!s.eventEngine);
         $('#arb_autoseed').prop('checked', !!s.autoSeed);
         $('#arb_autoseedevery').val(s.autoSeedEvery);
+        $('#arb_seedtk').val(s.seedTranscriptK);
+        $('#arb_seedmk').val(s.seedMemoryK);
+        $('#arb_seedout').val(s.seedOutTokens);
         $('#arb_showhud').prop('checked', !!s.showHud);
         $('#arb_poise').val(s.duelPoise);
         $('#arb_profile').val(s.profileId || '');
@@ -2202,6 +2218,9 @@
         $('#arb_enctypes').val(s.encounterTypes).on('change', function () { s.encounterTypes = this.value; saveSettings(); });
         $('#arb_autoseed').prop('checked', !!s.autoSeed).on('change', function () { s.autoSeed = this.checked; saveSettings(); });
         $('#arb_autoseedevery').val(s.autoSeedEvery).on('input', function () { s.autoSeedEvery = clamp(this.value, 10, 500); saveSettings(); });
+        $('#arb_seedtk').val(s.seedTranscriptK).on('input', function () { s.seedTranscriptK = clamp(this.value, 4, 400); saveSettings(); });
+        $('#arb_seedmk').val(s.seedMemoryK).on('input', function () { s.seedMemoryK = clamp(this.value, 2, 200); saveSettings(); });
+        $('#arb_seedout').val(s.seedOutTokens).on('input', function () { s.seedOutTokens = clamp(this.value, 400, 8000); saveSettings(); });
 
         $('#arb_mode').val(s.mode).on('change', function () { s.mode = this.value; saveSettings(); renderStatus(); });
         $('#arb_preset').val(s.preset).on('change', function () { s.preset = this.value; saveSettings(); renderStatus(); });
