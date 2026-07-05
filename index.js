@@ -297,7 +297,10 @@
         'examine', 'inspect', 'track', 'spot', 'eavesdrop', 'decipher', 'decode', 'recall', 'analyze',
         'pilot', 'maneuver', 'ram', 'board', 'breach', 'force', 'pry', 'smash', 'break', 'broke',
         'shatter', 'draw', 'drew', 'fight', 'fought', 'duel', 'spar', 'defend', 'resist', 'withstand',
-        'endure', 'brace',
+        'endure', 'brace', 'explode', 'blast', 'detonate', 'ignite', 'burn', 'scorch', 'incinerate',
+        'freeze', 'shock', 'electrocute', 'summon', 'conjure', 'unleash', 'erupt', 'obliterate',
+        'crush', 'cleave', 'slice', 'impale', 'pierce', 'skewer', 'bombard', 'barrage', 'volley',
+        'rush', 'flank', 'pounce', 'blow', 'blew', 'sever', 'launch',
     ].join(', ');
 
     const DEFAULTS = {

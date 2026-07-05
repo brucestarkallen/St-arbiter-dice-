@@ -6,7 +6,7 @@
     "js": "index.js",
     "css": "style.css",
     "author": "brucestarkallen",
-    "version": "0.6.0",
+    "version": "0.6.1",
     "homePage": "https://github.com/brucestarkallen/St-arbiter-dice-",
     "auto_update": false,
     "generate_interceptor": "arbiterInterceptor"
