@@ -22,7 +22,7 @@
     'use strict';
 
     const MODULE = 'arbiter';
-    const VERSION = '0.10.0';
+    const VERSION = '0.10.1';
     const INJECT_KEY = 'ARBITER_OUTCOME';
     const LOG = '[Arbiter]';
 
@@ -648,7 +648,8 @@
         'Rules:',
         '- check=false for dialogue, routine or trivial actions with no meaningful chance of interesting failure, pure narration, OOC talk, or actions attempted by characters other than the player.',
         '- circumstance rewards concrete tactics, positioning, preparation, and exploited weaknesses (+), and penalizes impairment, bad position, or haste (-). Use 0 when nothing notable applies.',
-        '- If the opposition is a character present in the sheet, use their name verbatim and opposition_kind "actor".',
+        '- The opponent is WHOEVER the fiction says the player is fighting in <recent>/<action>. Use that name. If they are also on the sheet, use the sheet spelling; if not, still name them from the fiction and set opposition_kind "actor" (they will be rated as trained). NEVER substitute a different sheet name just because it is familiar — the scene\'s named opponent always wins over a sheet entry.',
+        '- opposition must be a PERSON or creature the player fights. Never use a place, academy, house, faction, or organization name as the opposition.',
     ].join('\n');
 
     function compactRecent(chat, n, excludeMes) {
@@ -2117,7 +2118,8 @@
         '',
         'Rating guide: 2 untrained, 4 trained, 5 competent professional, 6 veteran, 7 elite, 8 master, 9 legendary, 10 apex-of-setting.',
         'Domains are lowercase single words (melee, ranged, stealth, social, athletics, intellect, willpower, pilot, craft — invent others only if the story clearly needs them).',
-        'Include the player character AND every named character in the story — allies, rivals, mentors, recurring NPCs, and anyone listed in <known_characters> — not only those active in the recent transcript. A large cast is expected; cover everyone named and do NOT silently drop characters to save space. 2-4 domains per actor is plenty. Rate from evidence in the transcript and memory; when unsure, prefer 4-6. Merge obvious duplicates or aliases into a single entry.',
+        'Include the player character AND every named CHARACTER in the story — allies, rivals, mentors, recurring NPCs, and people listed in <known_characters> — not only those active in the recent transcript. A large cast is expected; cover everyone named and do NOT silently drop characters to save space. 2-4 domains per actor is plenty. Rate from evidence in the transcript and memory; when unsure, prefer 4-6. Merge obvious duplicates or aliases into a single entry.',
+        'CRITICAL: actors are PEOPLE and creatures ONLY. Never create an entry for a place, city, academy, school, house, clan, faction, organization, team name, region, or title. If a name in <known_characters> is a location or institution (e.g. an academy or a noble house), leave it out entirely. When a name is ambiguous, include it only if the story clearly uses it as an individual who acts and fights.',
     ].join('\n');
 
     async function seedSheet(opts) {
@@ -2926,6 +2928,27 @@
                 return '';
             }, 'Take command: /war allied formations | enemy formations (xN clones).'],
             ['warend', () => { const m = getMeta(); if (m && m.battle) { endBattle(m); saveMeta(); } return ''; }, 'End the active war/battle.'],
+            ['foe', (na, text) => {
+                const name = String(text || '').trim();
+                if (!name) { toast('warning', 'Usage: /foe <correct opponent name>'); return ''; }
+                const m = getMeta(); if (!m) return '';
+                if (m.duel && m.duel.active) { m.duel.opp.name = name.slice(0, 60); saveMeta(); renderHud(); toast('success', 'Opponent renamed to ' + name + '.'); }
+                else { toast('warning', 'No active duel to rename. (For battles/wars, edit the roster.)'); }
+                return '';
+            }, 'Rename the current duel opponent (fixes a misnamed foe live).'],
+            ['arbforget', (na, text) => {
+                const name = String(text || '').trim();
+                const m = getMeta(); if (!m) return '';
+                if (!name) { toast('warning', 'Usage: /arbforget <name to remove from the sheet>'); return ''; }
+                const actors = m.sheet?.actors || {};
+                let removed = null;
+                for (const k of Object.keys(actors)) {
+                    if (k.toLowerCase() === name.toLowerCase() || k.toLowerCase().includes(name.toLowerCase())) { delete actors[k]; removed = k; break; }
+                }
+                saveMeta(); renderSheet();
+                toast(removed ? 'success' : 'warning', removed ? 'Removed "' + removed + '" from the sheet.' : 'No sheet entry matched "' + name + '".');
+                return '';
+            }, 'Remove a wrongly-added actor (e.g. a place) from the capability sheet.'],
             ['arbthreads', () => { seedThreads(); return ''; }, 'Seed World Threads (background currents) from the story.'],
         ];
         let registered = false;
