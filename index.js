@@ -22,7 +22,7 @@
     'use strict';
 
     const MODULE = 'arbiter';
-    const VERSION = '0.7.0';
+    const VERSION = '0.7.1';
     const INJECT_KEY = 'ARBITER_OUTCOME';
     const LOG = '[Arbiter]';
 
@@ -1415,11 +1415,17 @@
                 meta.duel = copy(snap); // legacy v0.2 snapshot: duel-or-null
             }
             if (meta.eventCache && meta.eventCache.key === key) delete meta.eventCache;
-            dlog('fight + world state rewound for re-roll of the same message');
+            // The committed fate no longer matches the rewound state: drop it.
+            // If the re-roll below fails, the next attempt rolls fresh instead
+            // of replaying a directive from a divergent timeline.
+            meta.cache = null;
+            renderHud();
+            dlog('fight + world state rewound for re-roll of the same message; stale fate invalidated');
         }
         // Concluded fights clear once the story moves to a new message.
-        if (meta.duel && meta.duel.over) { meta.duel = null; renderHud(); }
-        if (meta.battle && meta.battle.over) { meta.battle = null; renderHud(); }
+        if (meta.duel && meta.duel.over) { meta.duel = null; }
+        if (meta.battle && meta.battle.over) { meta.battle = null; }
+        renderHud(); // re-sync every turn: any previously missed render self-heals
 
         if (genType === 'normal') meta.turnCount = (meta.turnCount || 0) + 1;
 
@@ -2020,6 +2026,35 @@
             '<span class="arb_hud_val">' + Math.max(0, side.poise) + '/' + side.maxPoise + '</span>';
     }
 
+    let _lastHudHtml = '';
+
+    function hudDismiss() {
+        try {
+            const m = getMeta();
+            if (!m) return;
+            if (m.battle) endBattle(m, false);
+            else if (m.duel) endDuel(m, false);
+            m.cache = null; // an ended fight can't be resurrected by a re-roll
+            saveMeta();
+        } catch (e) { warn('HUD dismiss failed', e); }
+    }
+
+    function setHudHtml(el, html) {
+        el.innerHTML = html;
+        const x = el.querySelector('.arb_hud_x');
+        if (x) {
+            x.onclick = (ev) => { ev.stopPropagation(); hudDismiss(); };
+            x.ontouchend = (ev) => { ev.preventDefault(); ev.stopPropagation(); hudDismiss(); };
+        }
+        if (html !== _lastHudHtml) {
+            _lastHudHtml = html;
+            el.classList.remove('arb_hud_flash');
+            void el.offsetWidth; // restart the animation
+            el.classList.add('arb_hud_flash');
+            setTimeout(() => { try { el.classList.remove('arb_hud_flash'); } catch (e) { } }, 700);
+        }
+    }
+
     function renderHud() {
         try {
             if (typeof document === 'undefined' || !document.body || !document.createElement) return;
@@ -2033,13 +2068,6 @@
                 el = document.createElement('div');
                 el.id = 'arb_hud';
                 document.body.appendChild(el);
-                el.addEventListener('click', (ev) => {
-                    if (ev.target && ev.target.classList && ev.target.classList.contains('arb_hud_x')) {
-                        const m = getMeta();
-                        if (m && m.battle) { endBattle(m, false); saveMeta(); }
-                        else if (m && m.duel) { endDuel(m, false); saveMeta(); }
-                    }
-                });
             }
             if (battle && battle.active) {
                 const mc = battle.allies.find(u => u.isPlayer) || battle.allies[0];
@@ -2052,20 +2080,20 @@
                 const status = battle.over
                     ? '<b class="arb_hud_over">' + (battle.victor === 'allies' ? 'ALLIES WIN' : 'ENEMIES WIN') + '</b>'
                     : '<b>R' + battle.round + '</b>';
-                el.innerHTML = status +
+                setHudHtml(el, status +
                     ' <span class="arb_hud_name">Allies ' + standing(battle.allies).length + '/' + battle.allies.length + '</span>' + sideBar(battle.allies, 'pl') +
                     '<span class="arb_hud_vs">⚔</span>' + sideBar(battle.enemies, 'op') +
                     '<span class="arb_hud_name">' + standing(battle.enemies).length + '/' + battle.enemies.length + ' Enemies</span>' +
                     '<span class="arb_hud_val">· ' + escHtml(mc.name) + ' ' + Math.max(0, mc.poise) + '/' + mc.maxPoise + (mc.injuries ? ' ✚' + mc.injuries : '') + '</span>' +
-                    '<span class="arb_hud_x" title="End battle">✕</span>';
+                    '<span class="arb_hud_x" title="End battle">✕</span>');
                 return;
             }
             const status = duel.over
                 ? '<b class="arb_hud_over">' + escHtml((duel.victor === 'player' ? duel.player.name : duel.opp.name)) + ' WINS</b>'
                 : '<b>R' + duel.round + '</b>';
-            el.innerHTML = status + ' ' + hudBar(duel.player, 'pl') +
+            setHudHtml(el, status + ' ' + hudBar(duel.player, 'pl') +
                 '<span class="arb_hud_vs">⚔</span>' + hudBar(duel.opp, 'op') +
-                '<span class="arb_hud_x" title="End duel">✕</span>';
+                '<span class="arb_hud_x" title="End duel">✕</span>');
         } catch (e) { /* the HUD must never break anything */ }
     }
 
