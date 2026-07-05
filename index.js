@@ -911,7 +911,7 @@
         return units;
     }
 
-    function startBattle(meta, allyNames, enemyNames, domain) {
+    function startBattle(meta, allyNames, enemyNames, domain, scaleMismatch) {
         const s = getSettings();
         const d = String(domain || 'melee').toLowerCase();
         const playerName = ctx().name1 || 'Player';
@@ -931,6 +931,7 @@
         if (!enemies.length) return null;
         meta.battle = {
             active: true, over: false, victor: null, mcDown: false, round: 0, domain: d,
+            scaleMismatch: clamp(Math.round(Number(scaleMismatch) || 0), -4, 4),
             allies: [mc].concat(allies),
             enemies,
         };
@@ -979,7 +980,7 @@
         if (mv.kind === 'command') {
             const oppLead = Math.max(3, ...standing(b.enemies).map(u => u.rating));
             const openingBonus = mc.opening ? 1 : 0; mc.opening = false;
-            const delta = clamp(mc.rating - mc.injuries + openingBonus - oppLead + mv.circumstance + preset.bonus + mAll, -13, 13);
+            const delta = clamp(mc.rating - mc.injuries + openingBonus - oppLead + mv.circumstance + preset.bonus + mAll + (b.scaleMismatch || 0), -13, 13);
             const P = probFromDelta(delta); const u = rngFloat();
             const tier = sliceOutcome(P, u, preset.mods);
             sideMod = ({ DECISIVE: 2, SUCCESS: 1, SUCCESS_COST: 1, SETBACK: -1, FAILURE: -1, DISASTER: -2 })[tier] || 0;
@@ -991,7 +992,7 @@
             if (target) {
                 mcTargetName = target.name;
                 const openingBonus = mc.opening ? 1 : 0; mc.opening = false;
-                const delta = clamp((mc.rating - mc.injuries + mc.momentum + openingBonus) - (target.rating - target.injuries + target.momentum) + mv.circumstance + preset.bonus + mAll, -13, 13);
+                const delta = clamp((mc.rating - mc.injuries + mc.momentum + openingBonus) - (target.rating - target.injuries + target.momentum) + mv.circumstance + preset.bonus + mAll + (b.scaleMismatch || 0), -13, 13);
                 const P = probFromDelta(delta); const u = rngFloat();
                 const tier = tieCheck(sliceOutcome(P, u, preset.mods), P, u, getSettings().tieBand);
                 const r = applyExchangeEffects(mc, target, tier);
@@ -1010,7 +1011,7 @@
         const pairs = Math.min(A.length, Ev.length);
         const gang = A.length === Ev.length ? 0 : (A.length > Ev.length ? 1 : -1); // outnumbering side supports its pairs
         for (let i = 0; i < pairs; i++) {
-            reports.push(resolvePairing(A[i], Ev[i], sideMod + mAll + gang, preset));
+            reports.push(resolvePairing(A[i], Ev[i], sideMod + mAll + gang + (b.scaleMismatch || 0), preset));
         }
 
         b.round += 1;
@@ -1130,7 +1131,7 @@
         return battleActive(meta) && meta.battle.kind === 'war';
     }
 
-    function startWar(meta, allyNames, enemyNames, enemyCommander) {
+    function startWar(meta, allyNames, enemyNames, enemyCommander, scaleMismatch) {
         const s = getSettings();
         const d = 'war';
         const playerName = ctx().name1 || 'Player';
@@ -1170,6 +1171,7 @@
             kind: 'war', active: true, over: false, victor: null, mcDown: false, round: 0, domain: d,
             cmdA, cmdE, enemyCommander: enemyCommander || null,
             conditions: [],
+            scaleMismatch: clamp(Math.round(Number(scaleMismatch) || 0), -4, 4),
             allies: [mc].concat(allies),
             enemies,
         };
@@ -1228,7 +1230,7 @@
             target = pickUnit(b.enemies, mv.target);
             if (target) {
                 const openingBonus = mc.opening ? 1 : 0; mc.opening = false;
-                const delta = clamp((mc.rating - mc.injuries + mc.momentum + openingBonus) - (target.rating - target.injuries + target.momentum) + mv.circumstance + F + mAll + preset.bonus, -13, 13);
+                const delta = clamp((mc.rating - mc.injuries + mc.momentum + openingBonus) - (target.rating - target.injuries + target.momentum) + mv.circumstance + F + mAll + preset.bonus + (b.scaleMismatch || 0), -13, 13);
                 const P = probFromDelta(delta); const u = rngFloat();
                 const tier = tieCheck(sliceOutcome(P, u, preset.mods), P, u, getSettings().tieBand);
                 const r = applyExchangeEffects(mc, target, tier);
@@ -1242,7 +1244,7 @@
             target = pickUnit(b.enemies, mv.target);
             if (acting && target) {
                 const openingBonus = acting.opening ? 1 : 0; acting.opening = false;
-                const delta = clamp((acting.rating - acting.injuries + acting.momentum + openingBonus + cmdEdge) - (target.rating - target.injuries + target.momentum) + mv.circumstance + F + mAll + preset.bonus, -13, 13);
+                const delta = clamp((acting.rating - acting.injuries + acting.momentum + openingBonus + cmdEdge) - (target.rating - target.injuries + target.momentum) + mv.circumstance + F + mAll + preset.bonus + (b.scaleMismatch || 0), -13, 13);
                 const P = probFromDelta(delta); const u = rngFloat();
                 const tier = tieCheck(sliceOutcome(P, u, preset.mods), P, u, getSettings().tieBand);
                 const r = applyExchangeEffects(acting, target, tier);
@@ -1259,7 +1261,7 @@
         const pairs = Math.min(A.length, Ev.length);
         const gang = A.length === Ev.length ? 0 : (A.length > Ev.length ? 1 : -1);
         for (let i = 0; i < pairs; i++) {
-            reports.push(resolvePairing(A[i], Ev[i], F + mAll + gang + Math.round(cmdEdge / 2 * 2) / 2, preset));
+            reports.push(resolvePairing(A[i], Ev[i], F + mAll + gang + Math.round(cmdEdge / 2 * 2) / 2 + (b.scaleMismatch || 0), preset));
         }
 
         b.round += 1;
@@ -2318,7 +2320,7 @@
             // Auto battle start: group combat begins — this attempt resolves
             // as round 1 of a fresh battle.
             if (adj.battle_start && s.autoBattle) {
-                const started = startBattle(meta, adj.battle_start.allies, adj.battle_start.enemies, adj.domain);
+                const started = startBattle(meta, adj.battle_start.allies, adj.battle_start.enemies, adj.domain, adj.scale_mismatch);
                 if (started) {
                     const out = resolveBattleRound(meta, { kind: 'fight', target: null, action: adj.action, circumstance: adj.circumstance });
                     const directive = buildBattleDirective(meta, adj, out);
@@ -2333,7 +2335,7 @@
 
             // The player takes COMMAND of army-scale combat: open a war.
             if (adj.war_start && s.autoWar) {
-                const started = startWar(meta, adj.war_start.allies, adj.war_start.enemies, adj.war_start.enemy_commander);
+                const started = startWar(meta, adj.war_start.allies, adj.war_start.enemies, adj.war_start.enemy_commander, adj.scale_mismatch);
                 if (started) {
                     const out = resolveWarRound(meta, { kind: 'maneuver', acting: null, target: null, action: adj.action, circumstance: adj.circumstance });
                     const directive = buildWarDirective(meta, adj, out);

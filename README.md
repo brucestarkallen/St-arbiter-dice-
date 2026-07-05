@@ -281,6 +281,22 @@ trade drops both fighters at once. Tune frequency with the **Tie window**
 under Outcome feel (0 disables; 0.06 default; higher = more ties); it affects
 only fighting exchanges, never single checks.
 
+## Who each feature covers (v0.13.1)
+
+- **Conditions & gear** apply to EVERYONE — the player, allies, enemies, and
+  even army formations. A wounded rival, a cursed ally, an enchanted-blade
+  enemy, or a demoralized legion are all modified correctly (they flow through
+  the shared rating pipeline).
+- **Scale mismatch** now applies to DUELS, BATTLES, and WARS alike — a lone
+  hero, a squad, or a whole army facing a dragon or titan host all feel the
+  size gap (previously duels only). An equalizer in the fiction still shrinks
+  it.
+- **Composure** (automatic mental strain) is PLAYER-only by design — it's the
+  interior experience you're roleplaying, and tracking every NPC's nerves
+  would be invisible noise. A named character cracking under horror is still
+  expressible: the referee can give them a "terrified" condition, which does
+  modify their rating like any other.
+
 ## Gear & mental strain (v0.13)
 
 Two real-life dimensions beyond raw skill and body:
