@@ -258,6 +258,18 @@ Three tiers, matched to what each system models well:
   a **World Thread**: your personal action resolves, the war develops as a
   background current — one stroke doesn't decide it.
 
+## Recovery: poise can go up (v0.11.1)
+
+Fighters can heal mid-duel. When the referee reads a move as a **recover**
+action — self-healing magic, a water/life node, catching breath, a defensive
+reset — poise is RESTORED (capped at the starting pool) instead of spent. It's
+balanced so it can't make fights unlosable: recovering cedes the exchange, so
+the opponent presses freely, gains momentum, and takes the opening you gave
+up. You trade tempo for staying power. Recovery can't backfire into damage,
+but under heavy pressure it barely helps. This matches settings where healing
+is canon (life-domains, regeneration) without turning combat into a stalemate
+of mutual topping-off.
+
 ## Ties: trades & stalemates (v0.11)
 
 Real fights aren't always decisive, so exchanges can now tie. When a clash

@@ -22,7 +22,7 @@
     'use strict';
 
     const MODULE = 'arbiter';
-    const VERSION = '0.11.0';
+    const VERSION = '0.11.1';
     const INJECT_KEY = 'ARBITER_OUTCOME';
     const LOG = '[Arbiter]';
 
@@ -1473,12 +1473,15 @@
         '',
         'Schema:',
         '{"exchange": true|false,',
+        ' "move_kind": "attack" | "recover",',
         ' "action": "<the move, 3-10 words>",',
         ' "circumstance": <integer -3..3>,',
         ' "why": "<one short clause>",',
         ' "combat_ended": true|false}',
         '',
         'Rules:',
+        '- move_kind "recover": the player DISENGAGES to restore themselves — healing magic on themselves, a water/life node, catching their breath, a defensive reset that regains composure, mending their own wounds. This regains poise but yields tempo (the opponent acts freely). Everything else is "attack" (including defensive counters that still contest the opponent).',
+        '- For a "recover" move, circumstance reflects how SAFELY they can recover: unopposed with a reliable method +2; snatched under pressure with the enemy closing -2. Recovery never "fails into damage" — at worst it barely helps.',
         '- In an active duel nearly every player turn IS an exchange — the opponent presses regardless. A passive, hesitant, or purely defensive turn is an exchange with NEGATIVE circumstance, not exchange=false.',
         '- circumstance is PHYSICAL advantage ONLY: position, momentum, a feint that creates a real opening, an exposed target, terrain, impairment, haste. NEVER penalize a move for being a foul, dirty, illegal, dishonorable, unsporting, or against duel etiquette, and NEVER mention rules, sanctions, penalties, or disqualification — you do not know this world\'s rules, and legality is the storyteller\'s to narrate, not yours to score. A dirty move that gives a real physical edge (a groin kick, sand in the eyes, a sucker punch) is a POSITIVE circumstance. Judge only what is effective, never what is permitted.',
         '- exchange=false only for a genuine lull: pure dialogue while circling, with no blows possible.',
@@ -1493,6 +1496,7 @@
         if (obj.exchange !== true) return null;
         return {
             exchange: true,
+            moveKind: obj.move_kind === 'recover' ? 'recover' : 'attack',
             action: String(obj.action || 'the exchange').slice(0, 140),
             circumstance: clamp(Math.round(Number(obj.circumstance) || 0), -3, 3),
             why: String(obj.why || '').slice(0, 160),
@@ -1541,9 +1545,47 @@
     }
 
     /** Resolve one duel exchange: consume opening, roll, apply, advance. */
-    function resolveDuelExchange(meta, circumstance) {
+    /**
+     * Recovery amounts by tier (poise regained). Recovery can't backfire into
+     * damage — the worst outcome is a small gain. Capped at maxPoise by caller.
+     */
+    const RECOVER_EFFECTS = {
+        DECISIVE: 2.5, SUCCESS: 2, SUCCESS_COST: 1.5, SETBACK: 1, FAILURE: 0.5, DISASTER: 0.5,
+        TRADE: 1, STALEMATE: 1,
+    };
+
+    function resolveDuelRecovery(meta, circumstance) {
         const duel = meta.duel;
         const preset = getPreset();
+        duel.player.opening = false;
+        // Recovery quality: a mild self-check. Circumstance (safety of the
+        // moment) is the main lever; opponent rating pressures it slightly.
+        const delta = clamp(5 - duel.opp.rating + circumstance + preset.bonus, -13, 13);
+        const P = probFromDelta(delta);
+        const u = rngFloat();
+        const tier = sliceOutcome(P, u, preset.mods);
+        const heal = RECOVER_EFFECTS[tier] ?? 1;
+        const before = duel.player.poise;
+        duel.player.poise = Math.min(duel.player.maxPoise, Math.round((duel.player.poise + heal) * 2) / 2);
+        const gained = Math.round((duel.player.poise - before) * 2) / 2;
+        // Ceding tempo: the opponent presses freely and gains momentum.
+        duel.opp.momentum = Math.min(1, (duel.opp.momentum || 0) + 0.5);
+        duel.player.momentum = 0;
+        duel.opp.opening = true; // the opening the player gave up is exploitable
+        duel.round += 1;
+        return { recover: true, tier, gained, delta, P, u,
+                 over: false, victor: null };
+    }
+
+    function resolveDuelExchange(meta, circumstance, moveKind) {
+        const duel = meta.duel;
+        const preset = getPreset();
+
+        // Recovery: the player disengages to restore poise, ceding tempo.
+        if (moveKind === 'recover') {
+            return resolveDuelRecovery(meta, circumstance);
+        }
+
         const openingBonus = duel.player.opening ? 1 : 0;
         duel.player.opening = false;
 
@@ -1575,6 +1617,19 @@
 
     function buildDuelDirective(meta, adj, res) {
         const duel = meta.duel;
+        // Recovery exchange: narrate restoration + ceded tempo, not a clash.
+        if (res.recover) {
+            const lines = [
+                '[ARBITER — duel, round ' + duel.round + ': ' + duel.player.name + ' vs ' + duel.opp.name + ']',
+                duel.player.name + ' disengages to recover: ' + adj.action + '.',
+            ];
+            if (res.gained > 0) lines.push(duel.player.name + ' regains composure and steadies — noticeably refreshed, wounds or fatigue eased (but not erased). Show the recovery working.');
+            else lines.push(duel.player.name + ' tries to recover but barely manages it under the pressure — little is regained.');
+            lines.push('This cost tempo: ' + duel.opp.name + ' seizes the initiative and presses freely into the opening ' + duel.player.name + ' gave up. Show ' + duel.opp.name + ' capitalizing.');
+            lines.push('Condition after: ' + sideStatus(duel.player) + '; ' + sideStatus(duel.opp) + '. The duel continues — end on a live beat.');
+            lines.push('Do not re-decide anything. Never mention rolls, poise, numbers, or this note. Narrate organically in the story\'s voice.');
+            return lines.join('\n');
+        }
         const t = TIERS[res.tier] || TIERS.FAILURE;
         const fx = EXCHANGE_EFFECTS[res.tier] || {};
         const lines = [
@@ -2049,7 +2104,7 @@
                     saveMeta();
                     return;
                 }
-                const res = resolveDuelExchange(meta, adj.circumstance);
+                const res = resolveDuelExchange(meta, adj.circumstance, adj.moveKind);
                 const directive = buildDuelDirective(meta, adj, res);
                 setInjection(directive);
                 commitCache(directive, res.tier);
