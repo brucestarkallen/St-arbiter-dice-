@@ -85,6 +85,7 @@ Fully automatic. Manual controls:
 - `/arbseed` — rebuild the capability sheet from the story.
 - `/duel <opponent>` / `/duelend` — open or close a duel manually.
 - `/battle allies | enemies` / `/battleend` — open or close a group battle.
+- `/arbthreads` — seed World Threads (background currents) from the story.
 - Inline tags (configurable): put `[roll]` in a message to force, `[skip]` to skip.
 
 **Same action = same fate.** Swipes and regenerates of an unchanged message
@@ -196,13 +197,33 @@ is one round:
   aftermath: your side can still carry the day and drag you clear.
 - The HUD shows side bars, standing counts, and your own poise chip.
 
-## Event engine (v0.3, off by default)
+## Three-tier event engines & World Threads (v0.4)
 
-Escalating ambient randomness, real RNG: every quiet turn the trigger
-threshold drops, so the longer nothing happens the likelier a subtle hint
-fires — a complication, an opportunity, an arrival — injected as a one-line
-nudge the storyteller must weave in without derailing you. Never fires during
-fights; the same event replays across swipes.
+The event engine is now the full NE-P design, exact numbers: **Surprise**
+d100 vs DC 95 (−3 per quiet turn, ambient color), **Encounter** d200 vs 198
+(−2, real hooks the player can engage or ignore), **World** d500 vs 498 (−2,
+seismic who/what/where shifts that land as news first). Pity-timer RNG: the
+longer nothing happens, the likelier something fires; each tier resets on
+firing; nothing fires during fights; at most ONE background hint injects per
+turn (priority: thread completion > tangle > world > encounter > thread
+progress > surprise), and the same beat replays across swipes.
+
+**World Threads** are the background NPC/world sim, ported as dice rather
+than data: off-screen storylines (a rival's training, an investigation
+closing in, a faction's move) as 5-12 rung ladders that advance via
+heartbeat rolls on your quiet turns — bias tilts the odds, pace sets turns
+between beats, DECISIVE heartbeats jump two rungs, DISASTER ones regress.
+Two threads advancing at once **tangle**: an opposed roll, the winner gains
+a rung at the loser's expense, and the friction is surfaced. Progress
+injects escalating hints (rumor → visible development → unmistakable); a
+completed ladder "comes to a head" and must enter the open. Seed threads
+from the story + your memory extensions (`/arbthreads` or the panel button),
+or write the JSON by hand. Edited resends rewind background ticks along with
+everything else — world momentum never double-applies.
+
+Deliberate boundary: Arbiter owns the **dice** of the background world.
+Character *state* (personalities, relationships, who knows what) belongs to
+your character-ledger tooling — one source of truth each.
 
 ## Roadmap
 

@@ -221,27 +221,61 @@
         return 'beaten';
     }
 
-    /** Ambient event engine: escalating pity-timer randomness (pure). */
+    /** Ambient event engines: escalating pity-timer randomness (pure).
+     *  Three tiers at NE-P's numbers: Surprise d100 vs 95 (−3/quiet turn),
+     *  Encounter d200 vs 198 (−2), World d500 vs 498 (−2). */
     const EVENT_TYPES = ['a complication', 'an opportunity', 'an unexpected arrival', 'a small discovery', 'an environment shift', 'a rumor or overheard word'];
     const EVENT_TONES = ['tense', 'mundane', 'comic', 'ominous', 'warm', 'dramatic'];
+    const ENCOUNTER_TYPES = ['a rival or obstacle appears', 'a challenge is issued', 'someone needs help', 'a threat surfaces', 'a tempting shortcut opens', 'an old acquaintance resurfaces'];
+    const ENCOUNTER_TONES = ['tense', 'dangerous', 'promising', 'awkward', 'urgent'];
+    const WORLD_WHO = ['a powerful faction', 'an unknown actor', 'an old enemy', 'the authorities', 'a rising newcomer'];
+    const WORLD_WHAT = ['makes a decisive move', 'suffers a sudden collapse', 'reveals a long-held secret', 'declares open intent', 'shifts the balance of power'];
+    const WORLD_WHERE = ['far away, arriving as news', 'closer than expected', 'at the heart of things'];
 
+    const ENGINE_DEFAULTS = {
+        surprise: { sides: 100, dc0: 95, decay: 3 },
+        encounter: { sides: 200, dc0: 198, decay: 2 },
+        world: { sides: 500, dc0: 498, decay: 2 },
+    };
+
+    function rollTier(dc, sides, decay, resetDC, rng) {
+        const r = rng || Math.random;
+        const roll = Math.floor(r() * sides) + 1;
+        if (roll >= dc) return { fired: true, roll, nextDC: resetDC };
+        return { fired: false, roll, nextDC: Math.max(5, dc - decay) };
+    }
+
+    /** Back-compat wrapper: the Surprise tier with flavor. */
     function rollEventTick(dc, rng) {
         const r = rng || Math.random;
-        const roll = Math.floor(r() * 100) + 1;
-        if (roll >= dc) {
+        const t = rollTier(dc, 100, 3, 96, r);
+        if (t.fired) {
             return {
                 fired: true,
                 type: EVENT_TYPES[Math.floor(r() * EVENT_TYPES.length)],
                 tone: EVENT_TONES[Math.floor(r() * EVENT_TONES.length)],
-                nextDC: 96,
+                nextDC: t.nextDC,
             };
         }
         return { fired: false, nextDC: Math.max(20, dc - 3) };
     }
 
+    /** World Threads: dice-driven background plot ladders (NE-P World Arcs +
+     *  goal heartbeats, unified). Pure tick: returns {step, done} where step
+     *  is rung delta (-1, 0, +1, +2). */
+    function tickThread(bias, rng) {
+        const P = probFromDelta(clamp(bias, -13, 13));
+        const tier = sliceOutcome(P, (rng || Math.random)());
+        if (tier === 'DECISIVE') return 2;
+        if (tier === 'SUCCESS' || tier === 'SUCCESS_COST') return 1;
+        if (tier === 'DISASTER') return -1;
+        return 0;
+    }
+
     globalThis.ArbiterEngine = {
         probFromDelta, sliceOutcome, rngFloat, TIERS, TIER_RATINGS,
-        PRESETS, EXCHANGE_EFFECTS, applyExchangeEffects, poiseWord, rollEventTick,
+        PRESETS, EXCHANGE_EFFECTS, applyExchangeEffects, poiseWord,
+        rollEventTick, rollTier, tickThread, ENGINE_DEFAULTS,
     };
 
     /* ------------------------------------------------------------------ */
@@ -315,6 +349,16 @@
         if (!Array.isArray(m.log)) m.log = [];
         if (m.oneShot === undefined) m.oneShot = null;
         if (m.cache === undefined) m.cache = null;
+        if (!m.engines || typeof m.engines !== 'object') {
+            m.engines = {
+                surprise: { dc: Number.isFinite(m.eventDC) ? m.eventDC : ENGINE_DEFAULTS.surprise.dc0 },
+                encounter: { dc: ENGINE_DEFAULTS.encounter.dc0 },
+                world: { dc: ENGINE_DEFAULTS.world.dc0 },
+            };
+            delete m.eventDC;
+        }
+        if (!Array.isArray(m.threads)) m.threads = [];
+        if (!Number.isFinite(m.tickCount)) m.tickCount = 0;
         return m;
     }
 
@@ -791,6 +835,149 @@
     }
 
     /* ------------------------------------------------------------------ */
+    /* Background world: three-tier event engines + World Threads          */
+    /* ------------------------------------------------------------------ */
+
+    function threadIntensity(rung, maxRung) {
+        const f = maxRung > 0 ? rung / maxRung : 0;
+        if (f < 0.34) return 'a subtle sign or secondhand rumor';
+        if (f < 0.67) return 'a visible development or a direct brush with it';
+        return 'an unmistakable escalation';
+    }
+
+    /**
+     * One background pass for a fresh player turn. Rolls all three engine
+     * tiers, heartbeats due threads, resolves tangles, then injects AT MOST
+     * one hint by priority: thread completion > tangle > world > encounter >
+     * thread progress > surprise. Everything else advances silently (logged).
+     */
+    function backgroundTick(meta) {
+        const rng = rngFloat;
+        const queue = []; // {prio, text}
+
+        // Thread heartbeats
+        meta.tickCount += 1;
+        const advanced = [];
+        for (const th of meta.threads) {
+            if (th.done) continue;
+            const pace = clamp(th.pace ?? 3, 1, 10);
+            if (meta.tickCount - (th.lastTickAt ?? 0) < pace) continue;
+            th.lastTickAt = meta.tickCount;
+            const step = tickThread(th.bias ?? 0, rng);
+            if (step === 0) continue;
+            th.rung = clamp((th.rung ?? 0) + step, 0, th.maxRung ?? 8);
+            dlog('thread tick:', th.name, 'step', step, '→', th.rung + '/' + (th.maxRung ?? 8));
+            if (th.rung >= (th.maxRung ?? 8)) {
+                th.done = true;
+                queue.push({ prio: 6, text: '[ARBITER WORLD — a background current comes to a head: "' + th.name + '" (' + (th.desc || '') + '). Bring it into the open this scene or the next; it is no longer deniable.]' });
+            } else if (step > 0) {
+                advanced.push(th);
+                queue.push({ prio: 2, text: '[ARBITER WORLD — background current: "' + th.name + '" advances (stage ' + th.rung + '/' + (th.maxRung ?? 8) + '). Surface it as ' + threadIntensity(th.rung, th.maxRung ?? 8) + '. One beat; do not derail the player\'s action.]' });
+            } else {
+                queue.push({ prio: 2, text: '[ARBITER WORLD — background current: "' + th.name + '" suffers a setback (stage ' + th.rung + '/' + (th.maxRung ?? 8) + '). Show a hint of friction or reversal around it. One beat only.]' });
+            }
+        }
+
+        // Tangle: two currents advancing at once collide.
+        if (advanced.length >= 2) {
+            const [a, b] = advanced.slice().sort((x, y) => (y.rung / (y.maxRung ?? 8)) - (x.rung / (x.maxRung ?? 8)));
+            const P = probFromDelta(clamp((a.bias ?? 0) - (b.bias ?? 0), -13, 13));
+            const aWins = rng() < P;
+            const w = aWins ? a : b, l = aWins ? b : a;
+            w.rung = clamp(w.rung + 1, 0, w.maxRung ?? 8);
+            l.rung = clamp(l.rung - 1, 0, l.maxRung ?? 8);
+            queue.push({ prio: 5, text: '[ARBITER WORLD — collision of currents: "' + w.name + '" gains ground at the expense of "' + l.name + '". Let the friction between them show somewhere in this reply.]' });
+        }
+
+        // Engine tiers (NE-P numbers)
+        const eng = meta.engines;
+        const w = rollTier(eng.world.dc, ENGINE_DEFAULTS.world.sides, ENGINE_DEFAULTS.world.decay, ENGINE_DEFAULTS.world.dc0, rng);
+        eng.world.dc = w.nextDC;
+        if (w.fired) {
+            const who = WORLD_WHO[Math.floor(rng() * WORLD_WHO.length)];
+            const what = WORLD_WHAT[Math.floor(rng() * WORLD_WHAT.length)];
+            const where = WORLD_WHERE[Math.floor(rng() * WORLD_WHERE.length)];
+            queue.push({ prio: 4, text: '[ARBITER EVENT — seismic shift: ' + who + ' ' + what + ', ' + where + '. Land it as news or rumor first unless the fiction puts it on top of the player.]' });
+        }
+        const e = rollTier(eng.encounter.dc, ENGINE_DEFAULTS.encounter.sides, ENGINE_DEFAULTS.encounter.decay, ENGINE_DEFAULTS.encounter.dc0, rng);
+        eng.encounter.dc = e.nextDC;
+        if (e.fired) {
+            const type = ENCOUNTER_TYPES[Math.floor(rng() * ENCOUNTER_TYPES.length)];
+            const tone = ENCOUNTER_TONES[Math.floor(rng() * ENCOUNTER_TONES.length)];
+            queue.push({ prio: 3, text: '[ARBITER EVENT — a hook fires: ' + type + ' (' + tone + '). Introduce it as a real beat the player can engage or ignore.]' });
+        }
+        const su = rollTier(eng.surprise.dc, ENGINE_DEFAULTS.surprise.sides, ENGINE_DEFAULTS.surprise.decay, ENGINE_DEFAULTS.surprise.dc0, rng);
+        eng.surprise.dc = su.nextDC;
+        if (su.fired) {
+            const type = EVENT_TYPES[Math.floor(rng() * EVENT_TYPES.length)];
+            const tone = EVENT_TONES[Math.floor(rng() * EVENT_TONES.length)];
+            queue.push({ prio: 1, text: '[ARBITER EVENT HINT — weave one ambient beat into this reply: ' + type + ' (' + tone + '). Keep it subtle; do not derail the player\'s action.]' });
+        }
+
+        if (!queue.length) return null;
+        queue.sort((x, y) => y.prio - x.prio);
+        return queue[0].text;
+    }
+
+    const THREAD_SEED_SYSTEM = [
+        'You read a roleplay transcript plus its memory notes and propose BACKGROUND CURRENTS: off-screen storylines that should advance on their own (a rival\'s scheme, an investigation closing in, a faction\'s move, an NPC\'s ambition). Output STRICT JSON only, one object, no markdown.',
+        '',
+        'Schema: {"threads": [{"name": "<short name>", "desc": "<one line>", "maxRung": <5-12>, "bias": <-2..2, how strongly the world favors it>, "pace": <2-4, turns between heartbeats>}]}',
+        '',
+        'Rules: 2-5 threads. Only currents grounded in the story so far. Do NOT include the player\'s own active goals — these are what moves WITHOUT the player.',
+    ].join('\n');
+
+    async function seedThreads() {
+        const c = ctx();
+        const meta = getMeta();
+        if (!meta) { toast('warning', 'No chat open.'); return; }
+        const chat = c.chat || [];
+        toast('info', 'Reading the story for background currents…', 'Arbiter threads');
+        const parts = [];
+        let chars = 0;
+        for (let i = chat.length - 1; i >= 0 && chars < 6000; i--) {
+            const m = chat[i];
+            if (!m || !m.mes || m.is_system) continue;
+            const line = (m.name || (m.is_user ? 'Player' : 'AI')) + ': ' + String(m.mes).replace(/\s+/g, ' ').slice(0, 350);
+            chars += line.length;
+            parts.push(line);
+        }
+        let memoryBlock = '';
+        try {
+            const eps = c.extensionPrompts || c.extension_prompts || {};
+            const memRe = /summar|ception|memory|qvink|notepad/i;
+            const chunks = [];
+            for (const [k, v] of Object.entries(eps)) {
+                const val = v && typeof v === 'object' ? v.value : v;
+                if (memRe.test(k) && typeof val === 'string' && val.trim()) chunks.push(val.trim());
+            }
+            if (chunks.length) memoryBlock = '<memory>\n' + chunks.join('\n---\n').slice(0, 4000) + '\n</memory>\n\n';
+        } catch (e) { /* fine */ }
+        const existing = meta.threads.map(t => t.name).join(', ') || 'none';
+        const out = await callLLM(THREAD_SEED_SYSTEM, memoryBlock + '<existing_threads>' + existing + '</existing_threads>\n\n<transcript>\n' + parts.reverse().join('\n') + '\n</transcript>', 700, 45000);
+        const obj = extractJson(out);
+        if (!obj || !Array.isArray(obj.threads)) { toast('error', 'Thread seeding failed.'); return; }
+        let added = 0;
+        for (const t of obj.threads.slice(0, 6)) {
+            const name = String(t.name || '').trim().slice(0, 60);
+            if (!name) continue;
+            if (meta.threads.some(x => x.name.toLowerCase() === name.toLowerCase())) continue;
+            if (meta.threads.length >= 8) break;
+            meta.threads.push({
+                name, desc: String(t.desc || '').slice(0, 160),
+                rung: 0, maxRung: clamp(t.maxRung ?? 8, 5, 12),
+                bias: clamp(Math.round(Number(t.bias) || 0), -3, 3),
+                pace: clamp(t.pace ?? 3, 1, 10),
+                lastTickAt: meta.tickCount, done: false,
+            });
+            added++;
+        }
+        saveMeta();
+        renderThreads();
+        toast('success', 'Threads added: ' + added + '.', 'Arbiter threads');
+    }
+
+    /* ------------------------------------------------------------------ */
     /* Duel mode                                                           */
     /* ------------------------------------------------------------------ */
 
@@ -1160,8 +1347,8 @@
         // Player-initiated retries are a save-point choice, not model
         // sycophancy — the odds never bend, only the dice recast.
 
-        // Re-rolling the SAME message (edit or /arb): rewind any fight to the
-        // state it was in before that exchange, or damage double-applies.
+        // Re-rolling the SAME message (edit or /arb): rewind any fight AND the
+        // background world to the state before that turn, or effects double.
         const sendDate = String(lastUser.send_date || '');
         if (meta.cache && meta.cache.sendDate === sendDate && meta.cache.duelSnapshot !== undefined) {
             const snap = meta.cache.duelSnapshot;
@@ -1169,28 +1356,40 @@
             if (snap && typeof snap === 'object' && ('d' in snap || 'b' in snap)) {
                 meta.duel = copy(snap.d);
                 meta.battle = copy(snap.b);
+                if (snap.t !== undefined) meta.threads = copy(snap.t) || [];
+                if (snap.e !== undefined && snap.e) meta.engines = copy(snap.e);
+                if (snap.tc !== undefined) meta.tickCount = snap.tc;
             } else {
                 meta.duel = copy(snap); // legacy v0.2 snapshot: duel-or-null
             }
-            dlog('fight state rewound for re-roll of the same message');
+            if (meta.eventCache && meta.eventCache.key === key) delete meta.eventCache;
+            dlog('fight + world state rewound for re-roll of the same message');
         }
         // Concluded fights clear once the story moves to a new message.
         if (meta.duel && meta.duel.over) { meta.duel = null; renderHud(); }
         if (meta.battle && meta.battle.over) { meta.battle = null; renderHud(); }
 
-        // Ambient event engine: replay on the same message, tick on new ones.
+        // Snapshot the pre-turn world BEFORE any ticks or exchanges mutate it.
+        const duelSnapshot = {
+            d: meta.duel ? JSON.parse(JSON.stringify(meta.duel)) : null,
+            b: meta.battle ? JSON.parse(JSON.stringify(meta.battle)) : null,
+            t: JSON.parse(JSON.stringify(meta.threads || [])),
+            e: meta.engines ? JSON.parse(JSON.stringify(meta.engines)) : null,
+            tc: meta.tickCount || 0,
+        };
+
+        // Background world: replay on the same message, tick on new ones.
         if (s.eventEngine) {
             if (meta.eventCache && meta.eventCache.key === key) {
                 setEventInjection(meta.eventCache.text);
             } else if (genType === 'normal' && !duelActive(meta) && !battleActive(meta)) {
-                const tick = rollEventTick(meta.eventDC ?? 96, rngFloat);
-                meta.eventDC = tick.nextDC;
-                if (tick.fired) {
-                    const txt = '[ARBITER EVENT HINT — weave one ambient beat into this reply: ' + tick.type + ' (' + tick.tone + '). Keep it subtle; do not derail the player\'s action.]';
+                const txt = backgroundTick(meta);
+                if (txt) {
                     setEventInjection(txt);
                     meta.eventCache = { key, text: txt };
-                    dlog('ambient event fired:', tick.type, tick.tone);
+                    dlog('background beat fired');
                 }
+                renderThreads();
                 saveMeta();
             }
         }
@@ -1200,6 +1399,11 @@
         const inFight = inDuel || inBattle;
         if (!force && !inFight && !gatePasses(raw)) {
             dlog('gate: no check plausible');
+            // Commit a no-check verdict WITH the pre-turn world snapshot, so
+            // an edited resend of this message rewinds background ticks
+            // instead of stacking a second one.
+            meta.cache = { key, sendDate, directive: '', tier: null, duelSnapshot };
+            saveMeta();
             return;
         }
 
@@ -1208,10 +1412,6 @@
         const t0 = Date.now();
         try {
             const budget = clamp(s.timeoutMs, 1500, 60000);
-            const duelSnapshot = {
-                d: meta.duel ? JSON.parse(JSON.stringify(meta.duel)) : null,
-                b: meta.battle ? JSON.parse(JSON.stringify(meta.battle)) : null,
-            };
             const commitCache = (directive, tier) => { meta.cache = { key, sendDate, directive, tier, duelSnapshot }; };
             const duelToast = (adjAction, res) => {
                 if (!s.toastResults) return;
@@ -1537,7 +1737,7 @@
         <label class="checkbox_label"><input id="arb_autobattle" type="checkbox"><span>Auto battle</span></label>
         <label class="checkbox_label"><input id="arb_eventengine" type="checkbox"><span>Event engine</span></label>
       </div>
-      <div class="arb_hint">Auto battle: the referee opens GROUP fights from the fiction (party vs party, MC vs a gang). Event engine: escalating ambient randomness — the longer nothing happens, the likelier a subtle complication/opportunity/arrival hint fires (never during fights).</div>
+      <div class="arb_hint">Auto battle: the referee opens GROUP fights from the fiction (party vs party, MC vs a gang). Event engine: three escalating pity-timer tiers — Surprise d100 vs 95 (−3/quiet turn, ambient color), Encounter d200 vs 198 (−2, real hooks), World d500 vs 498 (−2, seismic shifts) — plus World Thread heartbeats. The longer nothing happens, the likelier something fires; never during fights; max one hint per turn.</div>
       <div class="arb_row">
         <label>Battle</label>
         <input id="arb_battle_allies" type="text" class="text_pole" placeholder="allies: Stella, Alexia">
@@ -1581,6 +1781,17 @@
       </div>
 
       <hr>
+      <b>World threads (per chat)</b>
+      <div class="arb_hint">Background currents that advance on their own via dice heartbeats — a rival's scheme, an investigation, a faction's move. Each is a ladder: rung 0 → maxRung (5-12); bias tilts its odds; pace = turns between heartbeats. Two advancing at once collide (tangle). At most ONE background hint injects per turn; the rest move silently. Requires Event engine ON.</div>
+      <div id="arb_threads_list" class="arb_hint"></div>
+      <textarea id="arb_threads" rows="5"></textarea>
+      <div class="arb_buttons">
+        <div id="arb_threads_save" class="menu_button">Save threads</div>
+        <div id="arb_threads_reload" class="menu_button">Reload</div>
+        <div id="arb_threads_seed" class="menu_button">Seed threads from story</div>
+      </div>
+
+      <hr>
       <b>Verb gate list</b>
       <div class="arb_hint">The action words the free gate scans your messages for (word-boundary match, plus s/es/ed/ing endings; quoted dialogue is ignored). Checks firing on harmless chatter → remove verbs. Real attempts slipping through unchecked → add the verbs your prose actually uses, comma-separated.</div>
       <textarea id="arb_verbs" rows="3"></textarea>
@@ -1615,6 +1826,21 @@
         const el = $('#arb_sheet');
         if (!el.length) return;
         el.val(meta ? JSON.stringify(meta.sheet, null, 2) : '{}');
+    }
+
+    function renderThreads() {
+        const meta = getMeta();
+        const el = $('#arb_threads');
+        const list = $('#arb_threads_list');
+        if (el.length) el.val(meta ? JSON.stringify(meta.threads, null, 1) : '[]');
+        if (list.length) {
+            if (!meta || !meta.threads.length) { list.html('<i>No threads. Seed some or add JSON below.</i>'); return; }
+            list.html(meta.threads.map(t => {
+                const max = t.maxRung ?? 8;
+                const filled = Math.max(0, Math.min(max, t.rung ?? 0));
+                return escHtml(t.name) + (t.done ? ' — <b>concluded</b>' : ' — ' + '▮'.repeat(filled) + '▯'.repeat(max - filled) + ' ' + filled + '/' + max);
+            }).join('<br>'));
+        }
     }
 
     function renderLog() {
@@ -1741,6 +1967,28 @@
         });
         $('#arb_battle_end').on('click', () => { const m = getMeta(); if (m && m.battle) { endBattle(m); saveMeta(); } });
 
+        $('#arb_threads_save').on('click', () => {
+            const meta = getMeta(); if (!meta) return;
+            try {
+                const arr = JSON.parse(String($('#arb_threads').val() || '[]'));
+                if (!Array.isArray(arr)) throw new Error('expected a JSON array');
+                meta.threads = arr.slice(0, 8).map(t => ({
+                    name: String(t.name || 'thread').slice(0, 60),
+                    desc: String(t.desc || '').slice(0, 160),
+                    rung: clamp(t.rung ?? 0, 0, 12),
+                    maxRung: clamp(t.maxRung ?? 8, 5, 12),
+                    bias: clamp(Math.round(Number(t.bias) || 0), -3, 3),
+                    pace: clamp(t.pace ?? 3, 1, 10),
+                    lastTickAt: Number.isFinite(t.lastTickAt) ? t.lastTickAt : meta.tickCount,
+                    done: !!t.done,
+                }));
+                saveMeta(); renderThreads();
+                toast('success', 'Threads saved.');
+            } catch (e) { toast('error', 'Invalid JSON: ' + e.message); }
+        });
+        $('#arb_threads_reload').on('click', renderThreads);
+        $('#arb_threads_seed').on('click', () => { seedThreads(); });
+
         $('#arb_profile').on('change', function () { s.profileId = this.value; saveSettings(); });
         $('#arb_profile_refresh').on('click', refreshProfiles);
 
@@ -1778,6 +2026,7 @@
         refreshProfiles();
         renderSheet();
         renderLog();
+        renderThreads();
     }
 
     /* ------------------------------------------------------------------ */
@@ -1816,6 +2065,7 @@
                 return '';
             }, 'Start a group battle: /battle allies | enemies (allies optional; x3 clones a unit).'],
             ['battleend', () => { const m = getMeta(); if (m && m.battle) { endBattle(m); saveMeta(); } return ''; }, 'End the active battle.'],
+            ['arbthreads', () => { seedThreads(); return ''; }, 'Seed World Threads (background currents) from the story.'],
         ];
         let registered = false;
         try {
@@ -1855,6 +2105,7 @@
             renderSheet();
             renderLog();
             renderHud();
+            renderThreads();
         });
     }
 
