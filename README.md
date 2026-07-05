@@ -354,6 +354,41 @@ terrifying monster can unnerve you in the same fight. (Ambient, non-combatant
 crowds are still narrated rather than individually simulated — but anyone you
 actually fight has a real, breakable nerve.)
 
+## Nerve at every scale: battle & war composure (v0.16)
+
+Composure used to live only in duels. Now it runs through **battles and wars**
+too — for the player-commander and for every individual unit and formation on
+the field. Three things follow:
+
+- **A rattled unit fights worse.** Each formation carries its own nerve, folded
+  into every clash the same way your own strain is: a shaken squadron, a
+  wavering flank, or a commander who has seen too much all take a real penalty
+  until they steady. A mindless construct with no nerve is simply unaffected.
+- **Morale shock is mechanical, and it cascades the way routs really do.**
+  Watching same-side units fall this round frays the survivors' individual
+  nerve — distinct from raw headcount morale, which only counts who's still
+  standing. A clean round with the numerical edge lets a side steady instead.
+  This is pure maths (no LLM), so it works in Fast mode too, and it never
+  *breaks* a unit on its own — nerve is mental; only losing all poise fells
+  anyone. Frayed nerve just makes the next clash harder, which is exactly how a
+  line starts to buckle before it breaks.
+- **Your nerve recovers between scenes.** On calm narrative turns — no fight, no
+  action, just story — your composure settles back a little at a time. It's
+  deliberately slow, so a single horror beat still erodes far faster than quiet
+  time heals, and it never overshoots your steady baseline.
+
+The roster the referee sees each turn now tags standing units as *(shaken)* or
+*(nerve breaking)* when their nerve slips, so it shows up in the prose on both
+sides.
+
+Two things are intentionally left out for now, to keep this robust: per-unit
+*atmospheric* fear from the fiction (e.g. a dragon's roar terrifying one
+specific formation independent of losses) isn't wired to an LLM signal — the
+mechanical loss-shock above covers the dominant real driver of formations
+breaking. And passive recovery heals *nerve* only, never persistent conditions
+(a broken arm or a curse stays until the fiction resolves it — those are meant
+to be deliberate and lasting, not to quietly heal on a timer).
+
 ## Who each feature covers (v0.13.1)
 
 - **Conditions & gear** apply to EVERYONE — the player, allies, enemies, and
@@ -364,11 +399,11 @@ actually fight has a real, breakable nerve.)
   hero, a squad, or a whole army facing a dragon or titan host all feel the
   size gap (previously duels only). An equalizer in the fiction still shrinks
   it.
-- **Composure** (automatic mental strain) is PLAYER-only by design — it's the
-  interior experience you're roleplaying, and tracking every NPC's nerves
-  would be invisible noise. A named character cracking under horror is still
-  expressible: the referee can give them a "terrified" condition, which does
-  modify their rating like any other.
+- **Composure** (automatic mental strain) now covers the player AND every unit
+  you fight — in duels, battles, and wars alike (v0.16). A named formation
+  leader or squadron cracking under fire fights measurably worse, and watching
+  comrades fall frays the survivors' nerve. Ambient non-combatants are still
+  narrated rather than individually simulated.
 
 ## Gear & mental strain (v0.13)
 

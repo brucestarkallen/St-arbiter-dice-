@@ -22,7 +22,7 @@
     'use strict';
 
     const MODULE = 'arbiter';
-    const VERSION = '0.15.1';
+    const VERSION = '0.16.0';
     const INJECT_KEY = 'ARBITER_OUTCOME';
     const LOG = '[Arbiter]';
 
@@ -408,7 +408,7 @@
         rollEventTick, rollTier, tickThread, ENGINE_DEFAULTS,
         EVENT_TYPES, ENCOUNTER_TYPES, extractJsonCandidates, collectMemoryBlock,
         STRATAGEM_EFFECTS, tieCheck, ratingFor, composurePenalty, applyComposureChange,
-        looksLikeRecovery,
+        looksLikeRecovery, combatantComposurePenalty, applyMoraleShock, passiveComposureRecovery,
     };
 
     /* ------------------------------------------------------------------ */
@@ -955,7 +955,8 @@
                 const rating = entry ? ratingFor(entry, domain, fallback)
                     : (isEnemySide ? clamp(TIER_RATINGS.trained, 0, 10) : fallback);
                 const poise = poiseFor(entry, s.duelPoise);
-                units.push({ name, rating, poise, maxPoise: poise, injuries: 0, momentum: 0, opening: false, standing: true, isPlayer: false });
+                const cMax = clamp(s.composureMax, 3, 12);
+                units.push({ name, rating, poise, maxPoise: poise, injuries: 0, momentum: 0, opening: false, standing: true, isPlayer: false, composure: cMax, composureMax: cMax });
             }
         }
         return units;
@@ -1002,7 +1003,7 @@
     /** One ally-vs-enemy pairing, from the ally's perspective. Returns a report line. */
     function resolvePairing(a, e, extraDelta, preset) {
         const openingBonus = a.opening ? 1 : 0; a.opening = false;
-        const delta = clamp((a.rating - a.injuries + a.momentum + openingBonus) - (e.rating - e.injuries + e.momentum) + extraDelta + preset.bonus, -13, 13);
+        const delta = clamp((a.rating - a.injuries + a.momentum + openingBonus) - (e.rating - e.injuries + e.momentum) + combatantComposurePenalty(a) - combatantComposurePenalty(e) + extraDelta + preset.bonus, -13, 13);
         const _P = probFromDelta(delta); const _u = rngFloat();
         const tier = tieCheck(sliceOutcome(_P, _u, preset.mods), _P, _u, getSettings().tieBand);
         const r = applyExchangeEffects(a, e, tier);
@@ -1022,6 +1023,8 @@
         const preset = getPreset();
         const mAll = clamp(Math.round((moraleOf(b.allies) - moraleOf(b.enemies)) * 2) / 2, -1, 1);
         const mc = b.allies.find(u => u.isPlayer);
+        const aStand0 = standing(b.allies.filter(u => !u.isPlayer)).length; // for post-round morale shock
+        const eStand0 = standing(b.enemies).length;
         const reports = [];
         let mcRes = null;
         let sideMod = 0;
@@ -1030,7 +1033,7 @@
         if (mv.kind === 'command') {
             const oppLead = Math.max(3, ...standing(b.enemies).map(u => u.rating));
             const openingBonus = mc.opening ? 1 : 0; mc.opening = false;
-            const delta = clamp(mc.rating - mc.injuries + openingBonus - oppLead + mv.circumstance + preset.bonus + mAll + (b.scaleMismatch || 0), -13, 13);
+            const delta = clamp(mc.rating - mc.injuries + openingBonus - oppLead + mv.circumstance + preset.bonus + mAll + composurePenalty(meta) + (b.scaleMismatch || 0), -13, 13);
             const P = probFromDelta(delta); const u = rngFloat();
             const tier = sliceOutcome(P, u, preset.mods);
             sideMod = ({ DECISIVE: 2, SUCCESS: 1, SUCCESS_COST: 1, SETBACK: -1, FAILURE: -1, DISASTER: -2 })[tier] || 0;
@@ -1042,7 +1045,7 @@
             if (target) {
                 mcTargetName = target.name;
                 const openingBonus = mc.opening ? 1 : 0; mc.opening = false;
-                const delta = clamp((mc.rating - mc.injuries + mc.momentum + openingBonus) - (target.rating - target.injuries + target.momentum) + mv.circumstance + preset.bonus + mAll + (b.scaleMismatch || 0), -13, 13);
+                const delta = clamp((mc.rating - mc.injuries + mc.momentum + openingBonus) - (target.rating - target.injuries + target.momentum) + mv.circumstance + preset.bonus + mAll + composurePenalty(meta) - combatantComposurePenalty(target) + (b.scaleMismatch || 0), -13, 13);
                 const P = probFromDelta(delta); const u = rngFloat();
                 const tier = tieCheck(sliceOutcome(P, u, preset.mods), P, u, getSettings().tieBand);
                 const r = applyExchangeEffects(mc, target, tier);
@@ -1088,6 +1091,9 @@
                 b.over = true; b.victor = aSum >= eSum ? 'allies' : 'enemies';
             }
         }
+        // Individual nerve frays as the round's casualties mount; a controlled
+        // round steadies. Only matters while the fight continues.
+        if (!b.over) applyMoraleShock(meta, b, aStand0 - standing(b.allies.filter(u => !u.isPlayer)).length, eStand0 - standing(b.enemies).length);
         return { mcRes, reports };
     }
 
@@ -1125,7 +1131,14 @@
 
     function battleContext(meta) {
         const b = meta.battle;
-        const list = (units) => units.map(u => u.name + (u.standing ? '' : ' (broken)')).join(', ');
+        const nerveTag = (u) => {
+            if (!getSettings().composure || typeof u.composure !== 'number') return '';
+            const frac = u.composure / (u.composureMax || u.composure);
+            if (frac < 0.25) return ' (nerve breaking)';
+            if (frac < 0.5) return ' (shaken)';
+            return '';
+        };
+        const list = (units) => units.map(u => u.name + (u.standing ? nerveTag(u) : ' (broken)')).join(', ');
         let out = '\n\n<battle_roster>\nAllies: ' + list(b.allies) + '\nEnemies: ' + list(b.enemies) + '\n</battle_roster>';
         if (b.kind === 'war' && b.conditions && b.conditions.length) {
             out += '\n<battlefield_conditions>\n' + b.conditions.map(c => c.name + ' (favors ' + c.favors + ')').join('; ') + '\n</battlefield_conditions>';
@@ -1208,7 +1221,8 @@
                     const entry = findActor(meta, base) || findActor(meta, name);
                     const rating = entry ? ratingFor(entry, 'war', ratingFor(entry, 'melee', fallback)) : (isEnemy ? 4 : fallback);
                     const strength = poiseFor(entry, clamp(s.warStrength, 4, 40));
-                    units.push({ name, rating, poise: strength, maxPoise: strength, injuries: 0, momentum: 0, opening: false, standing: true, isPlayer: false });
+                    const cMax = clamp(s.composureMax, 3, 12);
+                    units.push({ name, rating, poise: strength, maxPoise: strength, injuries: 0, momentum: 0, opening: false, standing: true, isPlayer: false, composure: cMax, composureMax: cMax });
                 }
             }
             return units;
@@ -1253,13 +1267,15 @@
         const mAll = clamp(Math.round((moraleOf(nonPlayer(b.allies)) - moraleOf(b.enemies)) * 2) / 2, -1, 1);
         const cmdEdge = clamp(Math.round((b.cmdA - b.cmdE) / 2 * 2) / 2, -2, 2);
         const mc = b.allies.find(u => u.isPlayer);
+        const aStand0 = standing(nonPlayer(b.allies)).length; // for post-round morale shock
+        const eStand0 = standing(b.enemies).length;
         const reports = [];
         let focalRes = null;
         let condNote = null;
         let acting = null, target = null;
 
         if (mv.kind === 'stratagem') {
-            const delta = clamp(b.cmdA - b.cmdE + mv.circumstance + mAll + preset.bonus, -13, 13);
+            const delta = clamp(b.cmdA - b.cmdE + mv.circumstance + mAll + preset.bonus + composurePenalty(meta), -13, 13);
             const P = probFromDelta(delta); const u = rngFloat();
             const tier = sliceOutcome(P, u, preset.mods);
             focalRes = { delta, P, u, tier, stratagem: true };
@@ -1280,7 +1296,7 @@
             target = pickUnit(b.enemies, mv.target);
             if (target) {
                 const openingBonus = mc.opening ? 1 : 0; mc.opening = false;
-                const delta = clamp((mc.rating - mc.injuries + mc.momentum + openingBonus) - (target.rating - target.injuries + target.momentum) + mv.circumstance + F + mAll + preset.bonus + (b.scaleMismatch || 0), -13, 13);
+                const delta = clamp((mc.rating - mc.injuries + mc.momentum + openingBonus) - (target.rating - target.injuries + target.momentum) + mv.circumstance + F + mAll + preset.bonus + composurePenalty(meta) - combatantComposurePenalty(target) + (b.scaleMismatch || 0), -13, 13);
                 const P = probFromDelta(delta); const u = rngFloat();
                 const tier = tieCheck(sliceOutcome(P, u, preset.mods), P, u, getSettings().tieBand);
                 const r = applyExchangeEffects(mc, target, tier);
@@ -1294,7 +1310,7 @@
             target = pickUnit(b.enemies, mv.target);
             if (acting && target) {
                 const openingBonus = acting.opening ? 1 : 0; acting.opening = false;
-                const delta = clamp((acting.rating - acting.injuries + acting.momentum + openingBonus + cmdEdge) - (target.rating - target.injuries + target.momentum) + mv.circumstance + F + mAll + preset.bonus + (b.scaleMismatch || 0), -13, 13);
+                const delta = clamp((acting.rating - acting.injuries + acting.momentum + openingBonus + cmdEdge) - (target.rating - target.injuries + target.momentum) + mv.circumstance + F + mAll + preset.bonus + combatantComposurePenalty(acting) - combatantComposurePenalty(target) + (b.scaleMismatch || 0), -13, 13);
                 const P = probFromDelta(delta); const u = rngFloat();
                 const tier = tieCheck(sliceOutcome(P, u, preset.mods), P, u, getSettings().tieBand);
                 const r = applyExchangeEffects(acting, target, tier);
@@ -1333,6 +1349,8 @@
         }
         if (mc && !mc.standing && !b.over) { b.over = true; b.victor = 'enemies'; b.mcDown = true; } // the commander falls
 
+        // Formation nerve frays with the round's losses; a controlled round steadies.
+        if (!b.over) applyMoraleShock(meta, b, aStand0 - standing(nonPlayer(b.allies)).length, eStand0 - standing(b.enemies).length);
         return { focalRes, reports, condNote, acting, target };
     }
 
@@ -1932,6 +1950,52 @@
         return { before, now, max, worsened: now < before, state: state(now) };
     }
 
+    /** Post-round morale shock for battles/wars. Watching same-side units fall
+     *  frays the survivors' individual nerve (composure) — a real driver of
+     *  formations breaking, and DISTINCT from headcount morale (moraleOf), which
+     *  is an attrition proxy. A clean round with no losses and a numerical edge
+     *  lets a side steady. The player commander/fighter shares the ally side's
+     *  fortune via meta composure. Purely mechanical — no LLM — so it works in
+     *  fast mode too, and it never breaks a unit (composure is mental, only
+     *  poise felling is lethal); a rattled unit merely fights worse next round.
+     *  breaks are counted among NON-player units (the MC is tracked via meta). */
+    function applyMoraleShock(meta, b, allyBreaks, enemyBreaks) {
+        if (!getSettings().composure) return;
+        const allyUnits = b.allies.filter(u => !u.isPlayer);
+        const enemyUnits = b.enemies;
+        const mc = b.allies.find(u => u.isPlayer);
+        const aStand = standing(allyUnits).length;
+        const eStand = standing(enemyUnits).length;
+        const nerve = (units, breaks, edge) => {
+            const shock = clamp(breaks, 0, 2); // 1–2+ comrades down this round → up to -2
+            for (const u of standing(units)) {
+                if (shock > 0) shiftCombatantComposure(u, -shock);
+                else if (edge) shiftCombatantComposure(u, +1); // a controlled, winning round steadies nerves
+            }
+        };
+        nerve(allyUnits, allyBreaks, aStand >= eStand);
+        nerve(enemyUnits, enemyBreaks, eStand >= aStand);
+        if (mc && mc.standing) {
+            if (allyBreaks > 0) applyComposureChange(meta, -clamp(allyBreaks, 0, 2)); // their line buckling rattles them
+            else if (aStand >= eStand) applyComposureChange(meta, +1);                // holding the line steadies them
+        }
+    }
+
+    /** Gentle between-scenes recovery of the player's nerve on quiet turns out of
+     *  combat — real minds settle with time and safety. Slow by design so it
+     *  never trivialises a horror beat; the fiction's own composure_change still
+     *  lands on top. Units aren't covered (they don't persist between scenes;
+     *  their nerve recovers in-fight via a controlled round). */
+    const PASSIVE_COMPOSURE_REGEN = 0.5;
+    function passiveComposureRecovery(meta) {
+        const s = getSettings();
+        if (!s.composure) return;
+        const max = clamp(s.composureMax, 3, 12);
+        if (typeof meta.composure !== 'number') { meta.composure = max; return; }
+        if (meta.composure >= max) return;
+        meta.composure = clamp(meta.composure + PASSIVE_COMPOSURE_REGEN, 0, max);
+    }
+
     function conditionMod(actorEntry, domain) {
         if (!actorEntry || !Array.isArray(actorEntry.conditions)) return 0;
         const d = String(domain || '').toLowerCase();
@@ -2215,6 +2279,11 @@
         const inFight = inDuel || inBattle;
         if (!force && !inFight && !gatePasses(raw)) {
             dlog('gate: no check plausible');
+            // A calm narrative turn (no action attempted, no fight): the player's
+            // nerve settles a little. Slow by design — a horror beat erodes far
+            // faster than this heals — and only on genuinely quiet turns, never
+            // on an active or stressful adjudicated beat.
+            if (genType === 'normal') passiveComposureRecovery(meta);
             // Commit a no-check verdict WITH the pre-turn world snapshot, so
             // an edited resend of this message rewinds background ticks
             // instead of stacking a second one.
