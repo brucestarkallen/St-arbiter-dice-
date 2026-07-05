@@ -228,6 +228,22 @@ Deliberate boundary: Arbiter owns the **dice** of the background world.
 Character *state* (personalities, relationships, who knows what) belongs to
 your character-ledger tooling — one source of truth each.
 
+## Scale: skirmish vs war (v0.9.1)
+
+Three tiers, matched to what each system models well:
+- **Duel** — one-on-one. Opens on any attack against a named person.
+- **Battle** — skirmish-scale group combat (a handful per side): you attack
+  multiple foes, or command a party. Opens on multi-target attacks ("sweep
+  through the guards") and spawns a generic squad if the enemies are unnamed.
+  Everyone auto-resolves each round; the HUD shows aggregate side strength.
+- **War** — army-scale (hundreds+, battle lines, sieges) does NOT go through
+  the poise HUD, which would flatten thousands into a 6-point bar. Instead it
+  becomes a **World Thread** that advances over many turns via heartbeat
+  rolls, while your personal action in the moment still resolves normally
+  ("your ice walls hold — but the war's tide isn't decided by one stroke").
+  So you fight your corner of the battle while the larger conflict develops
+  as a background current.
+
 ## Combat HUD (v0.9)
 
 Duels and battles show a floating HUD with two combatant cells: a colored

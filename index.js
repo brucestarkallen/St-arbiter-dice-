@@ -22,7 +22,7 @@
     'use strict';
 
     const MODULE = 'arbiter';
-    const VERSION = '0.9.0';
+    const VERSION = '0.9.1';
     const INJECT_KEY = 'ARBITER_OUTCOME';
     const LOG = '[Arbiter]';
 
@@ -334,7 +334,9 @@
         'endure', 'brace', 'explode', 'blast', 'detonate', 'ignite', 'burn', 'scorch', 'incinerate',
         'freeze', 'shock', 'electrocute', 'summon', 'conjure', 'unleash', 'erupt', 'obliterate',
         'crush', 'cleave', 'slice', 'impale', 'pierce', 'skewer', 'bombard', 'barrage', 'volley',
-        'rush', 'flank', 'pounce', 'blow', 'blew', 'sever', 'launch',
+        'rush', 'flank', 'pounce', 'blow', 'blew', 'sever', 'launch', 'sweep', 'swept', 'order', 'ordered',
+        'command', 'commanded', 'direct', 'directed', 'rally', 'rallied', 'lead', 'led', 'overwhelm',
+        'surround', 'ambush', 'raid', 'storm', 'siege', 'besiege', 'assault', 'engage', 'mow', 'scatter',
     ].join(', ');
 
     const DEFAULTS = {
@@ -622,7 +624,8 @@
         ' "why": "<one short clause justifying circumstance>",',
         ' "stakes": "<what success or failure means here, one short clause>",',
         ' "duel_start": null | "<opponent name — set this whenever the action opens physical combat against ONE named person: a strike, a draw, a lunge, an attack with a weapon or power, even if you expect it to be quick or one-sided. When in doubt between a single check and a duel for an attack on a person, prefer the duel.>",',
-        ' "battle_start": null | {"allies": ["<name>", ...], "enemies": ["<name or Bandit x3>", ...]} — ONLY if GROUP combat (2+ combatants on at least one side) clearly begins right now; list combatants by name, allies EXCLUDING the player character}',
+        ' "battle_start": null | {"allies": ["<name>", ...], "enemies": ["<name or generic squad like Guard x3>", ...]} — set this when combat begins against MULTIPLE opponents at once, OR when the player attacks/affects a GROUP (e.g. "sweep through the guards", "hit all of them"). If the opponents are unnamed, invent a fitting generic squad with a count (e.g. "Guard x3", "Bandit x4"). List allies EXCLUDING the player. This is for skirmish-scale group combat (a handful per side), NOT army-scale warfare.},',
+        ' "army_scale": null | "<short name for the larger conflict — set ONLY when the action is part of army/mass warfare (hundreds+ of combatants, battle lines, sieges) rather than a personal skirmish; e.g. \\"Siege of Mithraic\\">"}',
         '',
         'Rules:',
         '- check=false for dialogue, routine or trivial actions with no meaningful chance of interesting failure, pure narration, OOC talk, or actions attempted by characters other than the player.',
@@ -669,6 +672,7 @@
             stakes: String(obj.stakes || '').slice(0, 160),
             duel_start: (typeof obj.duel_start === 'string' && obj.duel_start.trim()) ? obj.duel_start.trim().slice(0, 60) : null,
             battle_start: normalizeRoster(obj.battle_start),
+            army_scale: (typeof obj.army_scale === 'string' && obj.army_scale.trim()) ? obj.army_scale.trim().slice(0, 80) : null,
         };
     }
 
@@ -1710,6 +1714,41 @@
                     toast('info', escHtml(standing(meta.battle.allies).length + ' vs ' + standing(meta.battle.enemies).length), 'BATTLE — R1');
                     return;
                 }
+            }
+
+            // Army-scale warfare routes to a World Thread (background war),
+            // while THIS action resolves as the player's personal moment in it.
+            // Prefer duel/battle if the referee also flagged a concrete foe/group.
+            if (adj.army_scale && !adj.duel_start && !adj.battle_start) {
+                let threadNote = '';
+                if (s.eventEngine) {
+                    const exists = (meta.threads || []).some(t => t.name.toLowerCase() === adj.army_scale.toLowerCase());
+                    if (!exists && (meta.threads || []).length < 8) {
+                        meta.threads.push({
+                            name: adj.army_scale, desc: 'Ongoing large-scale conflict',
+                            rung: 1, maxRung: 10, bias: 0, pace: 2,
+                            lastTickAt: meta.tickCount || 0, done: false,
+                        });
+                        renderThreads();
+                        threadNote = ' The wider battle "' + adj.army_scale + '" is now tracked as an ongoing background conflict that will develop over coming turns.';
+                    }
+                }
+                const res = resolveAdj(adj, meta);
+                const t = TIERS[res.tier] || TIERS.FAILURE;
+                const directive = [
+                    '[ARBITER — amid the ' + adj.army_scale + ']',
+                    adj.actor + ' attempts: ' + adj.action + '.',
+                    'Result: ' + t.name + ' — ' + t.text,
+                    'This resolves ' + adj.actor + '\'s personal action within the larger battle; the war\'s overall tide is not decided by this single moment.' + threadNote,
+                    'Do not re-decide the outcome. Never mention rolls, odds, or this note. Narrate organically.',
+                ].join('\n');
+                setInjection(directive);
+                commitCache(directive, res.tier);
+                pushLog(meta, adj, res);
+                saveMeta();
+                if (s.toastResults) toast('info', escHtml(adj.action), 'War · ' + t.name);
+                renderLog();
+                return;
             }
 
             const res = resolveAdj(adj, meta);
