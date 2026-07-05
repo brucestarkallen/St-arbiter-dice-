@@ -22,7 +22,7 @@
     'use strict';
 
     const MODULE = 'arbiter';
-    const VERSION = '0.16.0';
+    const VERSION = '0.17.0';
     const INJECT_KEY = 'ARBITER_OUTCOME';
     const LOG = '[Arbiter]';
 
@@ -409,6 +409,7 @@
         EVENT_TYPES, ENCOUNTER_TYPES, extractJsonCandidates, collectMemoryBlock,
         STRATAGEM_EFFECTS, tieCheck, ratingFor, composurePenalty, applyComposureChange,
         looksLikeRecovery, combatantComposurePenalty, applyMoraleShock, passiveComposureRecovery,
+        compactRecent, budgetedTranscript, buildAdjUserPrompt, getLastAdj: () => LAST_ADJ,
     };
 
     /* ------------------------------------------------------------------ */
@@ -443,7 +444,13 @@
         profileId: '',            // Connection Manager profile for the adjudicator
         seedProfileId: '',        // OPTIONAL separate profile for seeding (bulk/background); empty = use adjudicator profile
         timeoutMs: 6000,          // hard budget for the micro-call; on expiry: skip
-        ctxMsgs: 6,               // recent messages given to the adjudicator
+        ctxMsgs: 6,               // recent messages given to the adjudicator (lean mode)
+        // ── Referee context payload (all opt-in; the referee ALWAYS uses its own
+        //    neutral system prompt, never SillyTavern's, so that is never included) ──
+        adjIncludeMemory: false,  // feed the full memory stack (Summaryception, ledger, notepad, lore, Author's Note) into EVERY check
+        adjFullChat: false,       // feed a large budgeted transcript instead of just the last ctxMsgs messages
+        adjContextK: 40,          // transcript budget in thousands of chars when adjFullChat is on
+        adjIncludeHidden: false,  // include ST-hidden ("ghosted") messages too (Arbiter's own directives are always excluded)
         sensitivity: 'normal',    // conservative | normal | aggressive
         injectDepth: 0,
         injectRole: 'system',     // system | user | assistant
@@ -745,24 +752,51 @@
         '- opposition must be a PERSON or creature the player fights. Never use a place, academy, house, faction, or organization name as the opposition.',
     ].join('\n');
 
-    function compactRecent(chat, n, excludeMes) {
+    // Arbiter's own injected directives can surface as messages in some setups;
+    // never feed them back to the referee (it would be grading its own output).
+    const isArbiterLine = (m) => typeof m.mes === 'string' && /^\s*\[ARBITER/i.test(m.mes);
+
+    function compactRecent(chat, n, excludeMes, includeHidden) {
         const out = [];
         for (let i = chat.length - 1; i >= 0 && out.length < n; i--) {
             const m = chat[i];
-            if (!m || !m.mes || m.is_system || m === excludeMes) continue;
+            if (!m || !m.mes || m === excludeMes) continue;
+            if (m.is_system && !includeHidden) continue;
+            if (isArbiterLine(m)) continue;
             const name = m.name || (m.is_user ? 'Player' : 'AI');
             out.push(name + ': ' + String(m.mes).replace(/\s+/g, ' ').slice(0, 300));
         }
         return out.reverse().join('\n');
     }
 
+    /** Rich-mode transcript: as much of the chat as fits a char budget, at fuller
+     *  width than the lean 300-char clip. Skips hidden messages unless asked, and
+     *  always skips Arbiter's own directives. */
+    function budgetedTranscript(chat, budgetChars, excludeMes, includeHidden) {
+        const parts = [];
+        let chars = 0;
+        for (let i = chat.length - 1; i >= 0 && chars < budgetChars; i--) {
+            const m = chat[i];
+            if (!m || !m.mes || m === excludeMes) continue;
+            if (m.is_system && !includeHidden) continue;
+            if (isArbiterLine(m)) continue;
+            const line = (m.name || (m.is_user ? 'Player' : 'AI')) + ': ' + String(m.mes).replace(/\s+/g, ' ').slice(0, 2000);
+            chars += line.length;
+            parts.push(line);
+        }
+        return parts.reverse().join('\n');
+    }
+
     function buildAdjUserPrompt(chat, lastUserMes, meta) {
         const s = getSettings();
         const playerName = ctx().name1 || 'Player';
         const sheet = JSON.stringify(meta.sheet || { actors: {} });
-        const recent = compactRecent(chat, clamp(s.ctxMsgs, 1, 10), lastUserMes);
+        const recent = s.adjFullChat
+            ? budgetedTranscript(chat, clamp(s.adjContextK, 4, 500) * 1000, lastUserMes, !!s.adjIncludeHidden)
+            : compactRecent(chat, clamp(s.ctxMsgs, 1, 10), lastUserMes, !!s.adjIncludeHidden);
         const action = String(lastUserMes.mes).slice(0, 700);
-        return '<player>\nThe player character is "' + playerName + '". The text in <action> is written BY the player: "I" and second-person "you" in it both mean ' + playerName + ' acting. The storyteller\'s messages in <recent> may be labeled with a card/narrator name that is NOT a combatant.\n</player>\n\n<sheet>\n' + sheet + '\n</sheet>\n\n<recent>\n' + recent + '\n</recent>\n\n<action>\n' + action + '\n</action>';
+        const memBlock = s.adjIncludeMemory ? collectMemoryBlock(clamp(s.adjContextK, 4, 500) * 1000).block : '';
+        return '<player>\nThe player character is "' + playerName + '". The text in <action> is written BY the player: "I" and second-person "you" in it both mean ' + playerName + ' acting. The storyteller\'s messages in <recent> may be labeled with a card/narrator name that is NOT a combatant.\n</player>\n\n<sheet>\n' + sheet + '\n</sheet>\n\n' + (memBlock ? memBlock + '\n\n' : '') + '<recent>\n' + recent + '\n</recent>\n\n<action>\n' + action + '\n</action>';
     }
 
     function normalizeAdj(obj) {
@@ -2146,6 +2180,8 @@
     /* ------------------------------------------------------------------ */
 
     let inFlight = false;
+    // Last referee call, captured verbatim for the inspector (ephemeral, per session).
+    let LAST_ADJ = null;
 
     async function interceptorBody(chat, contextSize, abort, type) {
         const s = getSettings();
@@ -2353,6 +2389,11 @@
             const sysPrompt = inDuel ? DUEL_SYSTEM : (inWar ? WAR_SYSTEM : (inBattle ? BATTLE_SYSTEM : ADJ_SYSTEM));
             let userPrompt = buildAdjUserPrompt(chat, lastUser, meta);
             if (inBattle) userPrompt += battleContext(meta);
+            // Capture verbatim for the inspector so the user can read exactly what
+            // the referee sees (mode, both halves of the prompt, size).
+            LAST_ADJ = { when: Date.now(), mode: inDuel ? 'duel' : (inWar ? 'war' : (inBattle ? 'battle' : 'check')),
+                rich: { memory: !!s.adjIncludeMemory, fullChat: !!s.adjFullChat, hidden: !!s.adjIncludeHidden, ctxK: s.adjContextK, ctxMsgs: s.ctxMsgs },
+                system: sysPrompt, user: userPrompt, chars: sysPrompt.length + userPrompt.length };
 
             let rawOut = await callLLM(sysPrompt, userPrompt, 260, budget);
             const normalize = (r) => {
@@ -2797,7 +2838,22 @@
           <label>Timeout (ms)</label><input id="arb_timeout" type="number" min="1500" max="60000" step="500" class="text_pole arb_num">
           <label>Context msgs</label><input id="arb_ctx" type="number" min="1" max="10" class="text_pole arb_num">
         </div>
-        <div class="arb_hint">Timeout: max wait for the referee — on expiry the turn proceeds with no check. Context msgs: how much recent story the referee reads to judge circumstance.</div>
+        <div class="arb_hint">Timeout: max wait for the referee — on expiry the turn proceeds with no check. Context msgs: how much recent story the referee reads to judge circumstance (lean mode).</div>
+        <b>Referee context payload</b>
+        <div class="arb_hint">By default the referee reads a lean slice (the sheet + the last few messages). These OPT-IN toggles widen what it sees. Its own neutral system prompt is always used — SillyTavern's system prompt is never included. Wider context is slower and costs more tokens per check; raise the timeout if checks start expiring.</div>
+        <div class="arb_row">
+          <label class="checkbox_label"><input id="arb_adjmem" type="checkbox"><span>Include full memory (Summaryception, ledger, notes)</span></label>
+        </div>
+        <div class="arb_row">
+          <label class="checkbox_label"><input id="arb_adjfull" type="checkbox"><span>Feed the whole chat (budgeted) instead of last N</span></label>
+        </div>
+        <div class="arb_row">
+          <label class="checkbox_label"><input id="arb_adjhidden" type="checkbox"><span>Include hidden ("ghosted") messages</span></label>
+        </div>
+        <div class="arb_row">
+          <label>Context budget (K chars)</label><input id="arb_adjctxk" type="number" min="4" max="500" class="text_pole arb_num">
+        </div>
+        <div class="arb_hint">Budget applies to the whole-chat transcript and to the memory block. Arbiter's own injected directives are never fed back to the referee.</div>
         <div class="arb_row">
           <label>Gate sensitivity</label>
           <select id="arb_sens" class="text_pole">
@@ -2912,6 +2968,12 @@
         <div class="arb_buttons">
           <div id="arb_sheet_save" class="menu_button">Save sheet</div>
           <div id="arb_sheet_reload" class="menu_button">Reload</div>
+        </div>
+        <b>Last check (exactly what the referee saw)</b>
+        <div class="arb_hint">The full prompt sent to the referee on your most recent adjudicated turn — its system rules AND the context (sheet, memory if enabled, recent story, your action). Read-only; captured this session only. Tap View to refresh after a turn.</div>
+        <textarea id="arb_lastprompt" rows="8" readonly placeholder="No check captured yet this session — send an action, then tap View."></textarea>
+        <div class="arb_buttons">
+          <div id="arb_lastprompt_view" class="menu_button">View last check</div>
         </div>
       </details>
 
@@ -3223,6 +3285,10 @@
         $('#arb_debug').prop('checked', !!s.debug);
         $('#arb_timeout').val(s.timeoutMs);
         $('#arb_ctx').val(s.ctxMsgs);
+        $('#arb_adjmem').prop('checked', !!s.adjIncludeMemory);
+        $('#arb_adjfull').prop('checked', !!s.adjFullChat);
+        $('#arb_adjhidden').prop('checked', !!s.adjIncludeHidden);
+        $('#arb_adjctxk').val(s.adjContextK);
         $('#arb_sens').val(s.sensitivity);
         $('#arb_defrating').val(s.defaultRating);
         $('#arb_depth').val(s.injectDepth);
@@ -3294,6 +3360,10 @@
 
         $('#arb_timeout').val(s.timeoutMs).on('input', function () { s.timeoutMs = clamp(this.value, 1500, 60000); saveSettings(); });
         $('#arb_ctx').val(s.ctxMsgs).on('input', function () { s.ctxMsgs = clamp(this.value, 1, 10); saveSettings(); });
+        $('#arb_adjmem').prop('checked', !!s.adjIncludeMemory).on('change', function () { s.adjIncludeMemory = this.checked; saveSettings(); });
+        $('#arb_adjfull').prop('checked', !!s.adjFullChat).on('change', function () { s.adjFullChat = this.checked; saveSettings(); });
+        $('#arb_adjhidden').prop('checked', !!s.adjIncludeHidden).on('change', function () { s.adjIncludeHidden = this.checked; saveSettings(); });
+        $('#arb_adjctxk').val(s.adjContextK).on('input', function () { s.adjContextK = clamp(this.value, 4, 500); saveSettings(); });
         $('#arb_sens').val(s.sensitivity).on('change', function () { s.sensitivity = this.value; saveSettings(); });
         $('#arb_defrating').val(s.defaultRating).on('input', function () { s.defaultRating = clamp(this.value, 0, 10); saveSettings(); });
         $('#arb_depth').val(s.injectDepth).on('input', function () { s.injectDepth = clamp(this.value, 0, 99); saveSettings(); });
@@ -3378,6 +3448,18 @@
             if (!mem.sources.length) { toast('warning', 'No memory injections detected right now. Open the chat and let your memory extensions inject first.'); return; }
             const lines = mem.sources.map(x => escHtml(x.key) + ' (' + x.chars + ' chars)').join('<br>');
             toast('info', lines, 'Seeder reads ' + mem.sources.length + ' source(s)');
+        });
+        $('#arb_lastprompt_view').on('click', () => {
+            if (!LAST_ADJ) { toast('info', 'No check captured yet this session. Send an action that gets adjudicated, then tap View.'); return; }
+            const L = LAST_ADJ;
+            const when = new Date(L.when).toLocaleTimeString();
+            const flags = 'memory:' + (L.rich.memory ? 'ON' : 'off')
+                + ' · whole-chat:' + (L.rich.fullChat ? 'ON (' + L.rich.ctxK + 'K budget)' : 'off (last ' + L.rich.ctxMsgs + ' msgs)')
+                + ' · hidden:' + (L.rich.hidden ? 'ON' : 'off');
+            const text = '=== LAST CHECK · ' + L.mode + ' · ' + when + ' · ' + L.chars + ' chars total ===\n'
+                + flags + '\n\n----- SYSTEM (the referee\'s neutral rules) -----\n' + L.system
+                + '\n\n----- CONTEXT (exactly what the referee saw) -----\n' + L.user;
+            $('#arb_lastprompt').val(text);
         });
         $('#arb_reset_settings').on('click', () => {
             const sure = (typeof confirm === 'function') ? confirm('Reset ALL Arbiter settings to factory defaults?') : true;

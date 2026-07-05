@@ -354,6 +354,48 @@ terrifying monster can unnerve you in the same fight. (Ambient, non-combatant
 crowds are still narrated rather than individually simulated — but anyone you
 actually fight has a real, breakable nerve.)
 
+## Referee context payload + inspector (v0.17)
+
+By default the referee runs **lean**: it reads its own neutral system prompt, the
+capability sheet, and the last few messages (Context msgs) — enough to judge the
+physics of one action, cheap and fast. That default is unchanged.
+
+But you can now **opt into a wider payload** per check, with granular toggles
+(Combat → Referee context payload):
+
+- **Include full memory** — feeds the whole memory stack (Summaryception, the
+  Copilot ledger, notepads, lore, Author's Note) into *every* check, not just at
+  seed time. Useful when a decisive fact lives in memory rather than the recent
+  messages.
+- **Feed the whole chat (budgeted)** — replaces the last-N slice with as much of
+  the transcript as fits a char budget, at fuller width than the lean clip.
+- **Include hidden ("ghosted") messages** — surfaces messages you've hidden from
+  the story so the referee sees the complete picture.
+- **Context budget (K chars)** — the ceiling for the transcript and the memory
+  block.
+
+Two things are deliberate and permanent here: the referee **always** uses its
+own impartial system prompt — SillyTavern's system prompt is *never* included
+(that's the main "make it fun for the hero" bias vector, and keeping it out is
+what makes the judge neutral). And **Arbiter's own injected directives are never
+fed back** to the referee — it never grades its own past output.
+
+A word of honesty on the trade-off: wider context is slower and costs more
+tokens on every check, and dumping tens of thousands of tokens into a small
+focused model can *dilute* its judgement (lost-in-the-middle) rather than sharpen
+it. It's off by default for that reason. If you turn it on and checks start
+expiring, raise the Timeout. Treat it as an experiment — the sheet already
+distils memory into ratings, so the lean default is often enough.
+
+**Inspector.** Data & tools now has a *Last check* view: tap "View last check"
+to see the exact prompt sent to the referee on your most recent adjudicated turn
+— its system rules *and* the full context (sheet, memory if enabled, recent
+story, your action), plus which toggles were active and the total size. It's
+captured for the current session so you can see precisely what the referee saw,
+not just the memory-sources banner.
+
+Every new knob is editable in settings and covered by Reset settings.
+
 ## Nerve at every scale: battle & war composure (v0.16)
 
 Composure used to live only in duels. Now it runs through **battles and wars**
