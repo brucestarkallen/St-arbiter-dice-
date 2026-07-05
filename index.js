@@ -22,7 +22,7 @@
     'use strict';
 
     const MODULE = 'arbiter';
-    const VERSION = '0.9.1';
+    const VERSION = '0.10.0';
     const INJECT_KEY = 'ARBITER_OUTCOME';
     const LOG = '[Arbiter]';
 
@@ -306,11 +306,26 @@
         return 0;
     }
 
+    /**
+     * War stratagem outcomes ("burn the woods", "feign retreat"): commander
+     * roll tier → battlefield effect. Conditions are persistent field
+     * modifiers; DISASTER means the stratagem BACKFIRES and favors the enemy.
+     */
+    const STRATAGEM_EFFECTS = {
+        DECISIVE: { condMod: 2, favors: 'allies' },
+        SUCCESS: { condMod: 1, favors: 'allies' },
+        SUCCESS_COST: { condMod: 1, favors: 'allies', selfCost: 0.5 },
+        SETBACK: { condMod: 0, opening: true },
+        FAILURE: { condMod: 0, enemyMomentum: true },
+        DISASTER: { condMod: 1, favors: 'enemies' },
+    };
+
     globalThis.ArbiterEngine = {
         probFromDelta, sliceOutcome, rngFloat, TIERS, TIER_RATINGS,
         PRESETS, EXCHANGE_EFFECTS, applyExchangeEffects, poiseWord,
         rollEventTick, rollTier, tickThread, ENGINE_DEFAULTS,
         EVENT_TYPES, ENCOUNTER_TYPES, extractJsonCandidates, collectMemoryBlock,
+        STRATAGEM_EFFECTS,
     };
 
     /* ------------------------------------------------------------------ */
@@ -357,6 +372,8 @@
         preset: 'realistic',      // gritty | realistic | heroic
         autoDuel: true,           // let the adjudicator open/close duels from the fiction
         autoBattle: true,         // let the adjudicator open group battles from the fiction
+        autoWar: true,            // open commander-mode wars when the player leads armies
+        warStrength: 10,          // default formation strength pool (sheet 'poise' overrides)
         eventEngine: true,        // ambient escalating random events (pity-timer RNG)
         autoSeed: true,           // background sheet/thread seeding — no commands needed
         autoSeedEvery: 50,        // re-read story+memory every N turns to learn new faces
@@ -625,7 +642,8 @@
         ' "stakes": "<what success or failure means here, one short clause>",',
         ' "duel_start": null | "<opponent name — set this whenever the action opens physical combat against ONE named person: a strike, a draw, a lunge, an attack with a weapon or power, even if you expect it to be quick or one-sided. When in doubt between a single check and a duel for an attack on a person, prefer the duel.>",',
         ' "battle_start": null | {"allies": ["<name>", ...], "enemies": ["<name or generic squad like Guard x3>", ...]} — set this when combat begins against MULTIPLE opponents at once, OR when the player attacks/affects a GROUP (e.g. "sweep through the guards", "hit all of them"). If the opponents are unnamed, invent a fitting generic squad with a count (e.g. "Guard x3", "Bandit x4"). List allies EXCLUDING the player. This is for skirmish-scale group combat (a handful per side), NOT army-scale warfare.},',
-        ' "army_scale": null | "<short name for the larger conflict — set ONLY when the action is part of army/mass warfare (hundreds+ of combatants, battle lines, sieges) rather than a personal skirmish; e.g. \\"Siege of Mithraic\\">"}',
+        ' "war_start": null | {"allies": ["<formation, e.g. Left Flank, 3rd Cavalry, Zero Squadron>", ...], "enemies": ["<enemy formation>", ...], "enemy_commander": "<name or null>"} — set when the player takes COMMAND of army-scale combat: leading forces, issuing orders to units/formations/squadrons. Invent sensible formation names from the fiction if unnamed (2-5 per side).,',
+        ' "army_scale": null | "<short name for the larger conflict — set ONLY when the player is caught in mass warfare WITHOUT commanding it (a soldier or bystander in the melee); if they command, use war_start instead>"}',
         '',
         'Rules:',
         '- check=false for dialogue, routine or trivial actions with no meaningful chance of interesting failure, pure narration, OOC talk, or actions attempted by characters other than the player.',
@@ -672,8 +690,17 @@
             stakes: String(obj.stakes || '').slice(0, 160),
             duel_start: (typeof obj.duel_start === 'string' && obj.duel_start.trim()) ? obj.duel_start.trim().slice(0, 60) : null,
             battle_start: normalizeRoster(obj.battle_start),
+            war_start: normalizeWarStart(obj.war_start),
             army_scale: (typeof obj.army_scale === 'string' && obj.army_scale.trim()) ? obj.army_scale.trim().slice(0, 80) : null,
         };
+    }
+
+    function normalizeWarStart(ws) {
+        const r = normalizeRoster(ws);
+        if (!r) return null;
+        r.enemy_commander = (ws && typeof ws.enemy_commander === 'string' && ws.enemy_commander.trim())
+            ? ws.enemy_commander.trim().slice(0, 60) : null;
+        return r;
     }
 
     function normalizeRoster(bs) {
@@ -913,8 +940,256 @@
 
     function battleContext(meta) {
         const b = meta.battle;
-        const list = (units) => units.map(u => u.name + (u.standing ? '' : ' (down)')).join(', ');
-        return '\n\n<battle_roster>\nAllies: ' + list(b.allies) + '\nEnemies: ' + list(b.enemies) + '\n</battle_roster>';
+        const list = (units) => units.map(u => u.name + (u.standing ? '' : ' (broken)')).join(', ');
+        let out = '\n\n<battle_roster>\nAllies: ' + list(b.allies) + '\nEnemies: ' + list(b.enemies) + '\n</battle_roster>';
+        if (b.kind === 'war' && b.conditions && b.conditions.length) {
+            out += '\n<battlefield_conditions>\n' + b.conditions.map(c => c.name + ' (favors ' + c.favors + ')').join('; ') + '\n</battlefield_conditions>';
+        }
+        return out;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* War mode — the player commands formations at army scale             */
+    /* ------------------------------------------------------------------ */
+
+    const WAR_SYSTEM = [
+        'You are Arbiter, refereeing one round of an ACTIVE army-scale battle that the player COMMANDS. Score the player\'s order for this round. You NEVER decide who wins — only the parameters. Output STRICT JSON only: one object, no markdown, no commentary.',
+        '',
+        'Schema:',
+        '{"exchange": true|false,',
+        ' "order_kind": "maneuver" | "stratagem" | "personal",',
+        ' "acting_unit": "<friendly formation name from the roster, or null>",',
+        ' "target_unit": "<enemy formation name from the roster, or null>",',
+        ' "action": "<the order, 3-12 words>",',
+        ' "circumstance": <integer -3..3>,',
+        ' "why": "<one short clause>",',
+        ' "combat_ended": true|false}',
+        '',
+        'Rules:',
+        '- "maneuver": a formation is ordered against an enemy element (flank, charge, hold, envelop, pincer, screen, withdraw-and-counter). Fill acting_unit and target_unit from the roster.',
+        '- "stratagem": the order reshapes the FIELD rather than one clash — burn the woods, feign retreat, poison the wells, cut supply, deception, weather/terrain exploitation. Leave units null.',
+        '- "personal": the commander personally sorties into the fight (a duelist-commander, an ace in their machine). Fill target_unit.',
+        '- circumstance is the tactical soundness of THIS order given terrain, intel, enemy posture, timing, and prior conditions: a flank against an exposed side +2; a frontal charge uphill into prepared lines -2; 0 when unremarkable.',
+        '- In an active engagement nearly every commander turn IS an order; hesitation is a maneuver at negative circumstance. exchange=false only for genuine lulls (parley, night camp).',
+        '- combat_ended=true ONLY if the fiction has clearly ended the engagement (rout already narrated, surrender, retreat completed, relief arrived).',
+    ].join('\n');
+
+    function normalizeWarAdj(obj) {
+        if (!obj || typeof obj !== 'object') return null;
+        if (obj.combat_ended === true) return { combat_ended: true };
+        if (obj.exchange === false) return { exchange: false };
+        if (obj.exchange !== true) return null;
+        const kind = obj.order_kind === 'stratagem' ? 'stratagem' : (obj.order_kind === 'personal' ? 'personal' : 'maneuver');
+        const pick = (v) => (typeof v === 'string' && v.trim()) ? v.trim().slice(0, 60) : null;
+        return {
+            exchange: true,
+            kind,
+            acting: pick(obj.acting_unit),
+            target: pick(obj.target_unit),
+            action: String(obj.action || 'the order').slice(0, 160),
+            circumstance: clamp(Math.round(Number(obj.circumstance) || 0), -3, 3),
+            why: String(obj.why || '').slice(0, 160),
+        };
+    }
+
+    function warActive(meta) {
+        return battleActive(meta) && meta.battle.kind === 'war';
+    }
+
+    function startWar(meta, allyNames, enemyNames, enemyCommander) {
+        const s = getSettings();
+        const d = 'war';
+        const playerName = ctx().name1 || 'Player';
+        const pEntry = findActor(meta, playerName);
+        const fallback = clamp(s.defaultRating, 0, 10);
+        // Commander tactics: prefer a tactics/command/intellect domain, else default.
+        const cmdA = ratingFor(pEntry, 'tactics', ratingFor(pEntry, 'command', ratingFor(pEntry, 'intellect', fallback)));
+        const ecEntry = enemyCommander ? findActor(meta, enemyCommander) : null;
+        const cmdE = ecEntry ? ratingFor(ecEntry, 'tactics', ratingFor(ecEntry, 'command', 5)) : 5;
+        const mc = {
+            name: playerName,
+            rating: ratingFor(pEntry, 'melee', fallback),
+            poise: poiseFor(pEntry, s.duelPoise), maxPoise: poiseFor(pEntry, s.duelPoise),
+            injuries: 0, momentum: 0, opening: false, standing: true, isPlayer: true,
+        };
+        const mkUnits = (names, isEnemy) => {
+            const units = [];
+            for (const raw of (names || [])) {
+                const m2 = raw.match(/^(.*?)(?:\s*[x×]\s*(\d{1,2}))\s*$/i);
+                const base = (m2 ? m2[1] : raw).trim();
+                const count = m2 ? clamp(parseInt(m2[2], 10), 1, 6) : 1;
+                for (let i = 1; i <= count && units.length < 8; i++) {
+                    const name = count > 1 ? base + ' ' + i : base;
+                    const entry = findActor(meta, base) || findActor(meta, name);
+                    const rating = entry ? ratingFor(entry, 'war', ratingFor(entry, 'melee', fallback)) : (isEnemy ? 4 : fallback);
+                    const strength = poiseFor(entry, clamp(s.warStrength, 4, 40));
+                    units.push({ name, rating, poise: strength, maxPoise: strength, injuries: 0, momentum: 0, opening: false, standing: true, isPlayer: false });
+                }
+            }
+            return units;
+        };
+        const pn = playerName.toLowerCase();
+        const allies = mkUnits((allyNames || []).filter(n => { const x = n.toLowerCase(); return x !== pn && !x.includes(pn) && !pn.includes(x); }), false);
+        const enemies = mkUnits(enemyNames || [], true);
+        if (!enemies.length) return null;
+        meta.battle = {
+            kind: 'war', active: true, over: false, victor: null, mcDown: false, round: 0, domain: d,
+            cmdA, cmdE, enemyCommander: enemyCommander || null,
+            conditions: [],
+            allies: [mc].concat(allies),
+            enemies,
+        };
+        dlog('war started:', allies.length, 'formations vs', enemies.length, '· cmd', cmdA, 'vs', cmdE);
+        return meta.battle;
+    }
+
+    function conditionsField(b) {
+        return (b.conditions || []).reduce((t, c) => t + (c.favors === 'allies' ? c.mod : -c.mod), 0);
+    }
+
+    const nonPlayer = (units) => units.filter(u => !u.isPlayer);
+
+    function pickUnit(units, name) {
+        const st = standing(units);
+        if (name) {
+            const t = name.toLowerCase();
+            const hit = st.find(u => u.name.toLowerCase() === t) || st.find(u => u.name.toLowerCase().includes(t) || t.includes(u.name.toLowerCase()));
+            if (hit) return hit;
+        }
+        return st.slice().sort((x, y) => y.rating - x.rating)[0] || null;
+    }
+
+    /** Resolve one war round for the commander's scored order. */
+    function resolveWarRound(meta, mv) {
+        const b = meta.battle;
+        const preset = getPreset();
+        const F = conditionsField(b);
+        const mAll = clamp(Math.round((moraleOf(nonPlayer(b.allies)) - moraleOf(b.enemies)) * 2) / 2, -1, 1);
+        const cmdEdge = clamp(Math.round((b.cmdA - b.cmdE) / 2 * 2) / 2, -2, 2);
+        const mc = b.allies.find(u => u.isPlayer);
+        const reports = [];
+        let focalRes = null;
+        let condNote = null;
+        let acting = null, target = null;
+
+        if (mv.kind === 'stratagem') {
+            const delta = clamp(b.cmdA - b.cmdE + mv.circumstance + mAll + preset.bonus, -13, 13);
+            const P = probFromDelta(delta); const u = rngFloat();
+            const tier = sliceOutcome(P, u, preset.mods);
+            focalRes = { delta, P, u, tier, stratagem: true };
+            const fx = STRATAGEM_EFFECTS[tier] || {};
+            if (fx.condMod > 0) {
+                b.conditions = b.conditions || [];
+                b.conditions.push({ name: mv.action.slice(0, 60), favors: fx.favors, mod: fx.condMod });
+                if (b.conditions.length > 3) b.conditions.shift();
+                condNote = { favors: fx.favors, mod: fx.condMod };
+            }
+            if (fx.selfCost) {
+                const strongest = pickUnit(nonPlayer(b.allies), null);
+                if (strongest) { strongest.poise = Math.max(0, strongest.poise - fx.selfCost); if (strongest.poise <= 0) strongest.standing = false; }
+            }
+            if (fx.opening && mc) mc.opening = true; // commander finds an angle for next order
+            if (fx.enemyMomentum) { const e = pickUnit(b.enemies, null); if (e) e.momentum = Math.min(1, (e.momentum || 0) + 0.5); }
+        } else if (mv.kind === 'personal' && mc) {
+            target = pickUnit(b.enemies, mv.target);
+            if (target) {
+                const openingBonus = mc.opening ? 1 : 0; mc.opening = false;
+                const delta = clamp((mc.rating - mc.injuries + mc.momentum + openingBonus) - (target.rating - target.injuries + target.momentum) + mv.circumstance + F + mAll + preset.bonus, -13, 13);
+                const P = probFromDelta(delta); const u = rngFloat();
+                const tier = sliceOutcome(P, u, preset.mods);
+                const r = applyExchangeEffects(mc, target, tier);
+                Object.assign(mc, r.player); Object.assign(target, r.opp);
+                if (mc.poise <= 0) mc.standing = false;
+                if (target.poise <= 0) target.standing = false;
+                focalRes = { delta, P, u, tier, personal: true };
+            }
+        } else {
+            acting = pickUnit(nonPlayer(b.allies), mv.acting);
+            target = pickUnit(b.enemies, mv.target);
+            if (acting && target) {
+                const openingBonus = acting.opening ? 1 : 0; acting.opening = false;
+                const delta = clamp((acting.rating - acting.injuries + acting.momentum + openingBonus + cmdEdge) - (target.rating - target.injuries + target.momentum) + mv.circumstance + F + mAll + preset.bonus, -13, 13);
+                const P = probFromDelta(delta); const u = rngFloat();
+                const tier = sliceOutcome(P, u, preset.mods);
+                const r = applyExchangeEffects(acting, target, tier);
+                Object.assign(acting, r.player); Object.assign(target, r.opp);
+                if (acting.poise <= 0) acting.standing = false;
+                if (target.poise <= 0) target.standing = false;
+                focalRes = { delta, P, u, tier };
+            }
+        }
+
+        // The rest of the line clashes: remaining formations auto-pair.
+        const A = standing(nonPlayer(b.allies)).filter(u => u !== acting).sort((x, y) => y.rating - x.rating);
+        const Ev = standing(b.enemies).filter(u => u !== target).sort((x, y) => y.rating - x.rating);
+        const pairs = Math.min(A.length, Ev.length);
+        const gang = A.length === Ev.length ? 0 : (A.length > Ev.length ? 1 : -1);
+        for (let i = 0; i < pairs; i++) {
+            reports.push(resolvePairing(A[i], Ev[i], F + mAll + gang + Math.round(cmdEdge / 2 * 2) / 2, preset));
+        }
+
+        b.round += 1;
+
+        // Collapse & rout.
+        const aliveA = standing(nonPlayer(b.allies)).length;
+        const aliveE = standing(b.enemies).length;
+        const strength = (units) => standing(units).reduce((t, u) => t + Math.max(0, u.poise), 0);
+        const maxStrength = (units) => units.reduce((t, u) => t + u.maxPoise, 0) || 1;
+        if (!aliveE) { b.over = true; b.victor = 'allies'; }
+        else if (!aliveA) { b.over = true; b.victor = 'enemies'; }
+        else {
+            const eFrac = strength(b.enemies) / maxStrength(b.enemies);
+            const aFrac = strength(nonPlayer(b.allies)) / maxStrength(nonPlayer(b.allies));
+            const focalLostByE = focalRes && !focalRes.stratagem && ['DECISIVE', 'SUCCESS', 'SUCCESS_COST'].includes(focalRes.tier);
+            const focalLostByA = focalRes && !focalRes.stratagem && ['SETBACK', 'FAILURE', 'DISASTER'].includes(focalRes.tier);
+            if (eFrac <= 0.25 && focalLostByE) { b.over = true; b.victor = 'allies'; }        // the line breaks
+            else if (aFrac <= 0.25 && focalLostByA) { b.over = true; b.victor = 'enemies'; }
+        }
+        if (mc && !mc.standing && !b.over) { b.over = true; b.victor = 'enemies'; b.mcDown = true; } // the commander falls
+
+        return { focalRes, reports, condNote, acting, target };
+    }
+
+    function buildWarDirective(meta, adj, out) {
+        const b = meta.battle;
+        const mc = b.allies.find(u => u.isPlayer);
+        const aliveA = standing(nonPlayer(b.allies)).length;
+        const aliveE = standing(b.enemies).length;
+        const lines = [
+            '[ARBITER — war, round ' + b.round + ': ' + aliveA + '/' + nonPlayer(b.allies).length + ' formations vs ' + aliveE + '/' + b.enemies.length + ']',
+            mc.name + ' orders: ' + adj.action + '.',
+        ];
+        if (out.focalRes) {
+            const t = TIERS[out.focalRes.tier] || TIERS.FAILURE;
+            if (out.focalRes.stratagem) {
+                if (out.condNote && out.condNote.favors === 'allies') {
+                    lines.push('The stratagem takes hold: ' + t.name + '. A lasting condition now favors ' + mc.name + '\'s side' + (out.condNote.mod > 1 ? ' strongly' : '') + ' — show it reshaping the field.');
+                } else if (out.condNote && out.condNote.favors === 'enemies') {
+                    lines.push('The stratagem BACKFIRES: ' + t.name + '. It now works against ' + mc.name + '\'s side (wind turns, ruse seen through, ground betrays them) — show the reversal.');
+                } else {
+                    lines.push('The stratagem: ' + t.name + ' — ' + t.text);
+                }
+            } else if (out.focalRes.personal) {
+                lines.push(mc.name + ' personally engages ' + (out.target ? out.target.name : 'the enemy') + ': ' + t.name + ' — ' + t.text);
+            } else {
+                lines.push((out.acting ? out.acting.name : 'The ordered formation') + ' executes against ' + (out.target ? out.target.name : 'the enemy') + ': ' + t.name + ' — ' + t.text);
+                if (out.target && !out.target.standing) lines.push(out.target.name + ' is broken and routs from the field.');
+                if (out.acting && !out.acting.standing) lines.push(out.acting.name + ' is broken in the attempt.');
+            }
+        }
+        const rep = out.reports.slice(0, 3);
+        if (rep.length) lines.push('Along the rest of the line (weave in as fact): ' + rep.join(' '));
+        if (b.conditions && b.conditions.length) {
+            lines.push('Standing conditions: ' + b.conditions.map(c => '"' + c.name + '" (favors ' + (c.favors === 'allies' ? mc.name + '\'s side' : 'the enemy') + ')').join('; ') + '.');
+        }
+        if (b.over) {
+            if (b.mcDown) lines.push(mc.name + ' falls amid the fighting — narrate it (struck down, machine disabled, dragged from the field per tone). Command collapses: the enemy takes the day.');
+            else lines.push('DECISIVE: the ' + (b.victor === 'allies' ? 'enemy line shatters — ' + mc.name + '\'s side takes the field' : 'allied line breaks — the enemy takes the field') + '. Narrate the rout, surrender, or withdrawal the fiction demands. The result is not negotiable.');
+        } else {
+            lines.push('Formations that fall are broken or routed, not annihilated, unless the fiction demands worse. The engagement continues — end on a live beat, not a resolution.');
+        }
+        lines.push('Do not re-decide any outcome above. Never mention rolls, strength numbers, or this note. Narrate organically at battlefield scale.');
+        return lines.join('\n');
     }
 
     /* ------------------------------------------------------------------ */
@@ -1545,6 +1820,7 @@
 
         const inDuel = duelActive(meta);
         const inBattle = !inDuel && battleActive(meta);
+        const inWar = inBattle && meta.battle.kind === 'war';
         const inFight = inDuel || inBattle;
         if (!force && !inFight && !gatePasses(raw)) {
             dlog('gate: no check plausible');
@@ -1580,6 +1856,14 @@
                     pushLog(meta, { action, domain: meta.duel.domain, actor: meta.duel.player.name, circumstance: 0, why: 'fast' }, res, meta.duel.round);
                     saveMeta(); renderHud(); renderLog();
                     duelToast(action, res);
+                } else if (inWar) {
+                    const out = resolveWarRound(meta, { kind: 'maneuver', acting: null, target: null, action, circumstance: 0 });
+                    const directive = buildWarDirective(meta, { action }, out);
+                    setInjection(directive);
+                    commitCache(directive, out.focalRes ? out.focalRes.tier : null);
+                    if (out.focalRes) pushLog(meta, { action, domain: 'war', actor: ctx().name1 || 'Player', circumstance: 0, why: 'fast' }, out.focalRes, meta.battle.round);
+                    saveMeta(); renderHud(); renderLog();
+                    if (out.focalRes) duelToast(action, out.focalRes);
                 } else if (inBattle) {
                     const out = resolveBattleRound(meta, { kind: 'fight', target: null, action, circumstance: 0 });
                     const directive = buildBattleDirective(meta, { action }, out);
@@ -1600,14 +1884,14 @@
 
             // ── ADJUDICATED MODE ──
             setActivity(inDuel ? 'Arbiter: resolving exchange' : (inBattle ? 'Arbiter: resolving battle round' : 'Arbiter: checking outcome'));
-            const sysPrompt = inDuel ? DUEL_SYSTEM : (inBattle ? BATTLE_SYSTEM : ADJ_SYSTEM);
+            const sysPrompt = inDuel ? DUEL_SYSTEM : (inWar ? WAR_SYSTEM : (inBattle ? BATTLE_SYSTEM : ADJ_SYSTEM));
             let userPrompt = buildAdjUserPrompt(chat, lastUser, meta);
             if (inBattle) userPrompt += battleContext(meta);
 
             let rawOut = await callLLM(sysPrompt, userPrompt, 260, budget);
             const normalize = (r) => {
                 for (const cand of extractJsonCandidates(r, 5)) {
-                    const n = inDuel ? normalizeDuelAdj(cand) : (inBattle ? normalizeBattleAdj(cand) : normalizeAdj(cand));
+                    const n = inDuel ? normalizeDuelAdj(cand) : (inWar ? normalizeWarAdj(cand) : (inBattle ? normalizeBattleAdj(cand) : normalizeAdj(cand)));
                     if (n) return n;
                 }
                 return null;
@@ -1626,6 +1910,31 @@
             clearActivity();
             if (!adj) {
                 dlog('adjudicator unavailable or invalid — turn proceeds unmodified');
+                return;
+            }
+
+            if (inWar) {
+                if (adj.combat_ended) {
+                    endBattle(meta, true);
+                    commitCache('', null);
+                    saveMeta();
+                    toast('info', 'The fiction ended the engagement.');
+                    return;
+                }
+                if (adj.exchange === false) {
+                    dlog('war lull — no round this turn');
+                    commitCache('', null);
+                    saveMeta();
+                    return;
+                }
+                const out = resolveWarRound(meta, adj);
+                const directive = buildWarDirective(meta, adj, out);
+                setInjection(directive);
+                commitCache(directive, out.focalRes ? out.focalRes.tier : null);
+                if (out.focalRes) pushLog(meta, { action: adj.action, domain: 'war', actor: ctx().name1 || 'Player', circumstance: adj.circumstance, why: adj.why }, out.focalRes, meta.battle.round);
+                saveMeta(); renderHud(); renderLog();
+                dlog('war round', meta.battle.round, 'resolved');
+                if (out.focalRes) duelToast(adj.action, out.focalRes);
                 return;
             }
 
@@ -1712,6 +2021,21 @@
                     if (out.mcRes) pushLog(meta, adj, out.mcRes, meta.battle.round);
                     saveMeta(); renderHud(); renderLog();
                     toast('info', escHtml(standing(meta.battle.allies).length + ' vs ' + standing(meta.battle.enemies).length), 'BATTLE — R1');
+                    return;
+                }
+            }
+
+            // The player takes COMMAND of army-scale combat: open a war.
+            if (adj.war_start && s.autoWar) {
+                const started = startWar(meta, adj.war_start.allies, adj.war_start.enemies, adj.war_start.enemy_commander);
+                if (started) {
+                    const out = resolveWarRound(meta, { kind: 'maneuver', acting: null, target: null, action: adj.action, circumstance: adj.circumstance });
+                    const directive = buildWarDirective(meta, adj, out);
+                    setInjection(directive);
+                    commitCache(directive, out.focalRes ? out.focalRes.tier : null);
+                    if (out.focalRes) pushLog(meta, adj, out.focalRes, meta.battle.round);
+                    saveMeta(); renderHud(); renderLog();
+                    toast('info', escHtml(standing(nonPlayer(meta.battle.allies)).length + ' formations vs ' + standing(meta.battle.enemies).length), 'WAR — R1');
                     return;
                 }
             }
@@ -1992,9 +2316,11 @@
         <div class="arb_row">
           <label class="checkbox_label"><input id="arb_autoduel" type="checkbox"><span>Auto duel</span></label>
           <label class="checkbox_label"><input id="arb_autobattle" type="checkbox"><span>Auto battle</span></label>
+          <label class="checkbox_label"><input id="arb_autowar" type="checkbox"><span>Auto war</span></label>
           <label class="checkbox_label"><input id="arb_showhud" type="checkbox"><span>HUD</span></label>
           <label class="checkbox_label"><input id="arb_showact" type="checkbox"><span>Activity bar</span></label>
           <label>Poise</label><input id="arb_poise" type="number" min="1" max="20" class="text_pole arb_num">
+          <label>War strength</label><input id="arb_warstr" type="number" min="4" max="40" class="text_pole arb_num">
         </div>
         <div class="arb_hint">The referee opens duels/battles when combat clearly starts and closes them when the fiction ends one. HUD: floating round + poise bars (✕ ends the fight). Poise: 5 suits people, 6-8 mecha Frames; a "poise" key per actor in the sheet overrides.</div>
         <div class="arb_row">
@@ -2008,6 +2334,7 @@
         </div>
         <div class="arb_buttons">
           <div id="arb_battle_start" class="menu_button">Start battle</div>
+          <div id="arb_war_start" class="menu_button">Start war</div>
           <div id="arb_battle_end" class="menu_button">End battle</div>
         </div>
         <div class="arb_hint">Manual controls — same as /duel &lt;name&gt;, /duelend, /battle allies | enemies, /battleend. You are added to allies automatically; "x3" clones a unit; unlisted foes count as trained. Battle turns = a personal fight or a command to the whole side; everyone else auto-resolves.</div>
@@ -2300,9 +2627,10 @@
                     momentum: standing(battle.enemies).some(u => u.momentum > 0) ? 1 : 0,
                     injuries: 0, opening: false,
                 };
+                const warTag = battle.kind === 'war' ? 'WAR ' : '';
                 const badge = battle.over
-                    ? '<div class="arb_badge_over">' + (battle.victor === 'allies' ? 'ALLIES WIN' : 'ENEMIES WIN') + '</div>'
-                    : '<div class="arb_rbadge">R' + battle.round + '</div>';
+                    ? '<div class="arb_badge_over">' + (battle.victor === 'allies' ? (battle.kind === 'war' ? 'FIELD TAKEN' : 'ALLIES WIN') : (battle.kind === 'war' ? 'LINE BROKEN' : 'ENEMIES WIN')) + '</div>'
+                    : '<div class="arb_rbadge">' + warTag + 'R' + battle.round + '</div>';
                 const counts = '<div class="arb_counts">' + A.up + '/' + A.total + ' vs ' + E.up + '/' + E.total + '</div>';
                 setHudHtml(el,
                     '<div class="arb_hud_inner">' +
@@ -2313,7 +2641,7 @@
                         '<div class="arb_vs">VS</div>' +
                         combatantCell(eCell, 'op') +
                       '</div>' +
-                      '<div class="arb_mc">' + escHtml(mc.name) + ' · ' + (Math.round(Math.max(0, mc.poise) * 10) / 10) + '/' + mc.maxPoise + (mc.injuries ? ' ✚' + mc.injuries : '') + '</div>' +
+                      '<div class="arb_mc">' + escHtml(mc.name) + ' · ' + (Math.round(Math.max(0, mc.poise) * 10) / 10) + '/' + mc.maxPoise + (mc.injuries ? ' ✚' + mc.injuries : '') + ((battle.kind === 'war' && battle.conditions && battle.conditions.length) ? ' · ⚑' + battle.conditions.length : '') + '</div>' +
                     '</div>');
                 return;
             }
@@ -2353,6 +2681,8 @@
         $('#arb_preset').val(s.preset);
         $('#arb_autoduel').prop('checked', !!s.autoDuel);
         $('#arb_autobattle').prop('checked', !!s.autoBattle);
+        $('#arb_autowar').prop('checked', !!s.autoWar);
+        $('#arb_warstr').val(s.warStrength);
         $('#arb_eventengine').prop('checked', !!s.eventEngine);
         $('#arb_autoseed').prop('checked', !!s.autoSeed);
         $('#arb_autoseedevery').val(s.autoSeedEvery);
@@ -2440,6 +2770,18 @@
         $('#arb_duel_end').on('click', () => { const m = getMeta(); if (m && m.duel) { endDuel(m); saveMeta(); } });
 
         $('#arb_autobattle').prop('checked', !!s.autoBattle).on('change', function () { s.autoBattle = this.checked; saveSettings(); });
+        $('#arb_autowar').prop('checked', !!s.autoWar).on('change', function () { s.autoWar = this.checked; saveSettings(); });
+        $('#arb_warstr').val(s.warStrength).on('input', function () { s.warStrength = clamp(this.value, 4, 40); saveSettings(); });
+        $('#arb_war_start').on('click', () => {
+            const allies = String($('#arb_battle_allies').val() || '').split(',').map(x => x.trim()).filter(Boolean);
+            const enemies = String($('#arb_battle_enemies').val() || '').split(',').map(x => x.trim()).filter(Boolean);
+            if (!enemies.length) { toast('warning', 'Name at least one enemy formation.'); return; }
+            const meta = getMeta(); if (!meta) return;
+            const b = startWar(meta, allies, enemies, null);
+            if (!b) { toast('error', 'War setup failed.'); return; }
+            saveMeta(); renderHud();
+            toast('success', standing(nonPlayer(b.allies)).length + ' formations vs ' + standing(b.enemies).length + ' — war armed. Your next message is your first order.');
+        });
         $('#arb_eventengine').prop('checked', !!s.eventEngine).on('change', function () { s.eventEngine = this.checked; saveSettings(); });
         $('#arb_battle_start').on('click', () => {
             const allies = String($('#arb_battle_allies').val() || '').split(',').map(x => x.trim()).filter(Boolean);
@@ -2568,6 +2910,22 @@
                 return '';
             }, 'Start a group battle: /battle allies | enemies (allies optional; x3 clones a unit).'],
             ['battleend', () => { const m = getMeta(); if (m && m.battle) { endBattle(m); saveMeta(); } return ''; }, 'End the active battle.'],
+            ['war', (na, text) => {
+                const t = String(text || '');
+                const parts = t.split('|');
+                const enemiesStr = parts.length > 1 ? parts[1] : parts[0];
+                const alliesStr = parts.length > 1 ? parts[0] : '';
+                const allies = alliesStr.split(',').map(x => x.trim()).filter(Boolean);
+                const enemies = enemiesStr.split(',').map(x => x.trim()).filter(Boolean);
+                if (!enemies.length) { toast('warning', 'Usage: /war allied formations | enemy formations'); return ''; }
+                const m = getMeta(); if (!m) return '';
+                const b = startWar(m, allies, enemies, null);
+                if (!b) { toast('error', 'War setup failed.'); return ''; }
+                saveMeta(); renderHud();
+                toast('success', standing(nonPlayer(b.allies)).length + ' formations vs ' + standing(b.enemies).length + ' — war armed. Your next message is your first order.');
+                return '';
+            }, 'Take command: /war allied formations | enemy formations (xN clones).'],
+            ['warend', () => { const m = getMeta(); if (m && m.battle) { endBattle(m); saveMeta(); } return ''; }, 'End the active war/battle.'],
             ['arbthreads', () => { seedThreads(); return ''; }, 'Seed World Threads (background currents) from the story.'],
         ];
         let registered = false;
