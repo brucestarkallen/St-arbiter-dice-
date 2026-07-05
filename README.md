@@ -258,6 +258,25 @@ Three tiers, matched to what each system models well:
   a **World Thread**: your personal action resolves, the war develops as a
   background current — one stroke doesn't decide it.
 
+## Ties: trades & stalemates (v0.11)
+
+Real fights aren't always decisive, so exchanges can now tie. When a clash
+lands genuinely even (the roll sits near the win/lose boundary), it becomes a
+**TRADE** — both fighters land, both lose poise, nobody gains the upper hand —
+or a **STALEMATE** — neither lands cleanly, a tense reset with no advantage.
+Extremes (decisive/disaster) never tie. A duel can even end in a DRAW if a
+trade drops both fighters at once. Tune frequency with the **Tie window**
+under Outcome feel (0 disables; 0.06 default; higher = more ties); it affects
+only fighting exchanges, never single checks.
+
+## Empty sheet at fight time (v0.11)
+
+The first auto-seed now fires after just 2 messages (was 4), and if a duel
+opens against someone not yet rated, a background seed kicks off immediately
+so the following rounds use scene-derived stats instead of the flat default.
+Combat never blocks on it — the opening exchange uses the default, subsequent
+ones sharpen as the seed lands.
+
 ## Combat HUD (v0.9)
 
 Duels and battles show a floating HUD with two combatant cells: a colored

@@ -22,7 +22,7 @@
     'use strict';
 
     const MODULE = 'arbiter';
-    const VERSION = '0.10.3';
+    const VERSION = '0.11.0';
     const INJECT_KEY = 'ARBITER_OUTCOME';
     const LOG = '[Arbiter]';
 
@@ -147,6 +147,25 @@
         return 'FAILURE';
     }
 
+    /**
+     * Exchange tie detection. When an exchange lands genuinely even (the roll
+     * u sits close to the win/lose boundary P), remap the directional tier to
+     * a tie: a near-miss on either side that was almost the opposite becomes a
+     * TRADE (both land, both bleed) or STALEMATE (both whiff, tense reset),
+     * chosen by which side of the boundary and how the poise stands. band=0
+     * disables ties entirely. Only applied to fighting exchanges, never lone
+     * checks. Decisive/disaster extremes never tie.
+     */
+    function tieCheck(tier, P, u, band) {
+        if (!band || band <= 0) return tier;
+        if (tier === 'DECISIVE' || tier === 'DISASTER') return tier; // clear extremes stand
+        if (Math.abs(u - P) > band) return tier;                    // not close enough
+        // Even exchange. Marginal successes/setbacks (the ones adjacent to the
+        // boundary) trade blows; deeper-but-still-near ones lock into stalemate.
+        const veryClose = Math.abs(u - P) <= band * 0.5;
+        return veryClose ? 'TRADE' : 'STALEMATE';
+    }
+
     /** One uniform sample from real (crypto) RNG, [0,1). */
     function rngFloat() {
         try {
@@ -183,6 +202,14 @@
             name: 'DISASTER',
             text: 'It fails badly. Escalate with a serious consequence beyond the immediate attempt.',
         },
+        TRADE: {
+            name: 'TRADE',
+            text: 'Both land — an even, clashing exchange where each fighter takes a hit. Neither gains the upper hand; show the mutual toll.',
+        },
+        STALEMATE: {
+            name: 'STALEMATE',
+            text: 'Neither lands cleanly — the exchange is read and countered, a tense reset with no clear advantage. Show the deadlock, not a winner.',
+        },
     };
 
     /** Difficulty / opposition tier presets (unopposed tasks + unnamed foes). */
@@ -212,6 +239,9 @@
         SETBACK: { opp: 0, self: 1, winner: 'opp', opening: true },
         FAILURE: { opp: 0, self: 1.5, winner: 'opp' },
         DISASTER: { opp: 0, self: 2, injureSelf: true, winner: 'opp' },
+        // Ties — neither side clearly prevails in the exchange:
+        TRADE: { opp: 1, self: 1, winner: 'none' },      // both land; both bleed
+        STALEMATE: { opp: 0, self: 0, winner: 'none' },  // both whiff; tense reset
     };
 
     /**
@@ -230,16 +260,20 @@
         if (fx.winner === 'self') {
             p.momentum = Math.min(1, (p.momentum || 0) + 0.5);
             o.momentum = 0;
-        } else {
+        } else if (fx.winner === 'opp') {
             o.momentum = Math.min(1, (o.momentum || 0) + 0.5);
             p.momentum = 0;
+        } else {
+            // Tie: a trade bleeds momentum from both (scrappy, no control);
+            // a stalemate leaves momentum as-is (a held, tense reset).
+            if (fx.self > 0 || fx.opp > 0) { p.momentum = 0; o.momentum = 0; }
         }
         p.opening = !!fx.opening; // fail-forward: exploitable next round
         let over = false;
         let victor = null;
         if (p.poise <= 0 || o.poise <= 0) {
             over = true;
-            if (p.poise <= 0 && o.poise <= 0) victor = fx.winner === 'self' ? 'player' : 'opp';
+            if (p.poise <= 0 && o.poise <= 0) victor = fx.winner === 'self' ? 'player' : (fx.winner === 'opp' ? 'opp' : 'draw');
             else victor = o.poise <= 0 ? 'player' : 'opp';
         }
         return { player: p, opp: o, over, victor };
@@ -325,7 +359,7 @@
         PRESETS, EXCHANGE_EFFECTS, applyExchangeEffects, poiseWord,
         rollEventTick, rollTier, tickThread, ENGINE_DEFAULTS,
         EVENT_TYPES, ENCOUNTER_TYPES, extractJsonCandidates, collectMemoryBlock,
-        STRATAGEM_EFFECTS,
+        STRATAGEM_EFFECTS, tieCheck,
     };
 
     /* ------------------------------------------------------------------ */
@@ -382,6 +416,7 @@
         seedOutTokens: 4000,      // max tokens the seeder may emit (large casts fit comfortably)
         encounterTypes: '',       // comma list overriding built-in encounter hooks ('' = defaults)
         duelPoise: 5,             // default poise pool (sheet "poise" per actor overrides)
+        tieBand: 0.06,            // exchange tie window (0 disables; ~even rolls become TRADE/STALEMATE)
         showHud: true,
         showActivity: true,      // floating 'Arbiter is working…' indicator
         debug: false,
@@ -854,7 +889,8 @@
     function resolvePairing(a, e, extraDelta, preset) {
         const openingBonus = a.opening ? 1 : 0; a.opening = false;
         const delta = clamp((a.rating - a.injuries + a.momentum + openingBonus) - (e.rating - e.injuries + e.momentum) + extraDelta + preset.bonus, -13, 13);
-        const tier = sliceOutcome(probFromDelta(delta), rngFloat(), preset.mods);
+        const _P = probFromDelta(delta); const _u = rngFloat();
+        const tier = tieCheck(sliceOutcome(_P, _u, preset.mods), _P, _u, getSettings().tieBand);
         const r = applyExchangeEffects(a, e, tier);
         Object.assign(a, r.player); Object.assign(e, r.opp);
         if (a.poise <= 0) a.standing = false;
@@ -894,7 +930,7 @@
                 const openingBonus = mc.opening ? 1 : 0; mc.opening = false;
                 const delta = clamp((mc.rating - mc.injuries + mc.momentum + openingBonus) - (target.rating - target.injuries + target.momentum) + mv.circumstance + preset.bonus + mAll, -13, 13);
                 const P = probFromDelta(delta); const u = rngFloat();
-                const tier = sliceOutcome(P, u, preset.mods);
+                const tier = tieCheck(sliceOutcome(P, u, preset.mods), P, u, getSettings().tieBand);
                 const r = applyExchangeEffects(mc, target, tier);
                 Object.assign(mc, r.player); Object.assign(target, r.opp);
                 if (mc.poise <= 0) mc.standing = false;
@@ -1131,7 +1167,7 @@
                 const openingBonus = mc.opening ? 1 : 0; mc.opening = false;
                 const delta = clamp((mc.rating - mc.injuries + mc.momentum + openingBonus) - (target.rating - target.injuries + target.momentum) + mv.circumstance + F + mAll + preset.bonus, -13, 13);
                 const P = probFromDelta(delta); const u = rngFloat();
-                const tier = sliceOutcome(P, u, preset.mods);
+                const tier = tieCheck(sliceOutcome(P, u, preset.mods), P, u, getSettings().tieBand);
                 const r = applyExchangeEffects(mc, target, tier);
                 Object.assign(mc, r.player); Object.assign(target, r.opp);
                 if (mc.poise <= 0) mc.standing = false;
@@ -1145,7 +1181,7 @@
                 const openingBonus = acting.opening ? 1 : 0; acting.opening = false;
                 const delta = clamp((acting.rating - acting.injuries + acting.momentum + openingBonus + cmdEdge) - (target.rating - target.injuries + target.momentum) + mv.circumstance + F + mAll + preset.bonus, -13, 13);
                 const P = probFromDelta(delta); const u = rngFloat();
-                const tier = sliceOutcome(P, u, preset.mods);
+                const tier = tieCheck(sliceOutcome(P, u, preset.mods), P, u, getSettings().tieBand);
                 const r = applyExchangeEffects(acting, target, tier);
                 Object.assign(acting, r.player); Object.assign(target, r.opp);
                 if (acting.poise <= 0) acting.standing = false;
@@ -1516,7 +1552,7 @@
         const delta = clamp(effP - effO + circumstance + preset.bonus, -13, 13);
         const P = probFromDelta(delta);
         const u = rngFloat();
-        const tier = sliceOutcome(P, u, preset.mods);
+        const tier = tieCheck(sliceOutcome(P, u, preset.mods), P, u, getSettings().tieBand);
 
         const applied = applyExchangeEffects(duel.player, duel.opp, tier);
         duel.player = Object.assign({ name: duel.player.name, rating: duel.player.rating, maxPoise: duel.player.maxPoise }, applied.player);
@@ -2034,6 +2070,12 @@
             // Auto duel start: this attempt initiates sustained combat, so it
             // resolves as round 1 of a fresh duel.
             if (adj.duel_start && !adj.battle_start && s.autoDuel) {
+                // If the opponent isn't rated yet, kick a background seed so the
+                // NEXT rounds use scene-derived stats instead of the flat default.
+                if (s.autoSeed && !findActor(meta, adj.duel_start) && !autoSeedRunning) {
+                    autoSeedRunning = true;
+                    Promise.resolve(seedSheet({ auto: true })).finally(() => { autoSeedRunning = false; });
+                }
                 startDuel(meta, adj.actor, adj.duel_start, adj.domain);
                 const res = resolveDuelExchange(meta, adj.circumstance);
                 const directive = buildDuelDirective(meta, adj, res);
@@ -2260,7 +2302,7 @@
             const actorsN = Object.keys(meta.sheet.actors || {}).length;
             const tc = meta.turnCount || 0;
             const every = clamp(s.autoSeedEvery, 10, 500);
-            const firstRun = actorsN === 0 && tc >= 4;
+            const firstRun = actorsN === 0 && tc >= 2;
             const refresh = tc - (meta.lastAutoSeedAt ?? -999999) >= every;
             if (!firstRun && !refresh) return;
             autoSeedRunning = true;
@@ -2351,6 +2393,10 @@
           </select>
         </div>
         <div class="arb_hint">Adjudicated = referee micro-call per check (accurate). Fast = zero-latency pre-rolled pool, storyteller picks the footing (weaker). Preset: gritty = harsher tails · realistic = neutral curve · heroic = +1 player edge, halved disasters.</div>
+        <div class="arb_row">
+          <label>Tie window</label><input id="arb_tieband" type="number" min="0" max="0.2" step="0.01" class="text_pole arb_num">
+        </div>
+        <div class="arb_hint">In duels/battles, how often an even exchange becomes a TRADE (both take a hit) or STALEMATE (neither lands) instead of always having a winner — adds ebb and mutual damage to fights. 0 = off (every exchange is decisive); 0.06 default; higher = more ties. Only affects fighting exchanges, never single checks.</div>
       </details>
 
       <details class="arb_group">
@@ -2688,7 +2734,7 @@
                 return;
             }
             const badge = duel.over
-                ? '<div class="arb_badge_over">' + escHtml((duel.victor === 'player' ? duel.player.name : duel.opp.name)) + ' WINS</div>'
+                ? '<div class="arb_badge_over">' + (duel.victor === 'draw' ? 'DRAW — BOTH DOWN' : escHtml((duel.victor === 'player' ? duel.player.name : duel.opp.name)) + ' WINS') + '</div>'
                 : '<div class="arb_rbadge">R' + duel.round + '</div>';
             setHudHtml(el,
                 '<div class="arb_hud_inner">' +
@@ -2734,6 +2780,7 @@
         $('#arb_showhud').prop('checked', !!s.showHud);
         $('#arb_showact').prop('checked', !!s.showActivity);
         $('#arb_poise').val(s.duelPoise);
+        $('#arb_tieband').val(s.tieBand);
         $('#arb_profile').val(s.profileId || '');
         renderStatus();
     }
@@ -2801,6 +2848,7 @@
         $('#arb_showhud').prop('checked', !!s.showHud).on('change', function () { s.showHud = this.checked; saveSettings(); renderHud(); });
         $('#arb_showact').prop('checked', !!s.showActivity).on('change', function () { s.showActivity = this.checked; saveSettings(); renderActivity(); });
         $('#arb_poise').val(s.duelPoise).on('input', function () { s.duelPoise = clamp(this.value, 1, 20); saveSettings(); });
+        $('#arb_tieband').val(s.tieBand).on('input', function () { s.tieBand = clamp(this.value, 0, 0.2); saveSettings(); });
         $('#arb_duel_start').on('click', () => {
             const name = String($('#arb_duel_name').val() || '').trim();
             if (!name) { toast('warning', 'Give the opponent a name first.'); return; }
