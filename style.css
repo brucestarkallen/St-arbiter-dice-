@@ -76,3 +76,15 @@
 #arb_activity .arb_act_label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #arb_activity .arb_act_x { cursor: pointer; opacity: .6; padding: 0 4px; font-size: 1.05em; flex: 0 0 auto; }
 #arb_activity .arb_act_x:hover { opacity: 1; }
+
+/* v0.8.1: in-panel status line + brighter spinner */
+#arb_settings .arb_inline_status { display: flex; align-items: center; gap: 9px;
+  padding: 8px 12px; margin: 0 0 10px 0; border-radius: 8px;
+  background: rgba(92,201,138,.12); border: 1px solid rgba(92,201,138,.4);
+  font-size: .86em; color: var(--SmartThemeBodyColor, #eee); }
+#arb_settings .arb_inline_status .arb_act_x { margin-left: auto; cursor: pointer; opacity: .65; padding: 0 4px; }
+#arb_settings .arb_inline_status .arb_act_x:hover { opacity: 1; }
+.arb_act_spin { width: 15px; height: 15px; border-radius: 50%; display: inline-block; flex: 0 0 auto;
+  border: 3px solid rgba(120,200,150,.30); border-top-color: #5cc98a;
+  animation: arb_spin .7s linear infinite; }
+@keyframes arb_spin { to { transform: rotate(360deg); } }

@@ -22,7 +22,7 @@
     'use strict';
 
     const MODULE = 'arbiter';
-    const VERSION = '0.8.0';
+    const VERSION = '0.8.1';
     const INJECT_KEY = 'ARBITER_OUTCOME';
     const LOG = '[Arbiter]';
 
@@ -1850,6 +1850,7 @@
     </div>
     <div class="inline-drawer-content">
       <div id="arb_status" class="arb_status"></div>
+      <div id="arb_inline_status" class="arb_inline_status" style="display:none"></div>
 
       <details class="arb_group" open>
         <summary><i class="fa-solid fa-sliders"></i> Core</summary>
@@ -2104,14 +2105,34 @@
     function renderActivity() {
         try {
             if (typeof document === 'undefined' || !document.body || !document.createElement) return;
+            const show = activity.busy && getSettings().showActivity;
+            const secs = activity.startedAt ? Math.floor((Date.now() - activity.startedAt) / 1000) : 0;
+
+            // In-panel status line (always visible where the user is looking).
+            const inline = document.getElementById('arb_inline_status');
+            if (inline) {
+                if (activity.busy) {
+                    inline.style.display = 'flex';
+                    inline.innerHTML = '<span class="arb_act_spin"></span><span>' + escHtml(activity.label || 'Working') + (secs ? ' · ' + secs + 's' : '') + '</span>' +
+                        '<span class="arb_act_x" title="Cancel">✕</span>';
+                    const ix = inline.querySelector('.arb_act_x');
+                    if (ix) { const cx = (ev) => { if (ev) { ev.preventDefault(); ev.stopPropagation(); } activity.canceled = true; }; ix.onclick = cx; ix.ontouchend = cx; }
+                } else {
+                    inline.style.display = 'none';
+                    inline.innerHTML = '';
+                }
+            }
+
+            // Floating pill.
             let el = document.getElementById('arb_activity');
-            if (!activity.busy || !getSettings().showActivity) { if (el) el.remove(); return; }
+            if (!show) { if (el) el.remove(); return; }
             if (!el) {
                 el = document.createElement('div');
                 el.id = 'arb_activity';
+                // Force positioning inline so no theme/layout can bury or displace it.
+                el.style.cssText = 'position:fixed;bottom:80px;right:14px;z-index:2147483647;';
                 document.body.appendChild(el);
             }
-            const secs = activity.startedAt ? Math.floor((Date.now() - activity.startedAt) / 1000) : 0;
             el.innerHTML = '<span class="arb_act_spin"></span>' +
                 '<span class="arb_act_label">' + escHtml(activity.label) + (secs ? ' · ' + secs + 's' : '') + '</span>' +
                 '<span class="arb_act_x" title="Cancel">✕</span>';
