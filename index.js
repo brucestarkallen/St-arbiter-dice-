@@ -221,9 +221,27 @@
         return 'beaten';
     }
 
+    /** Ambient event engine: escalating pity-timer randomness (pure). */
+    const EVENT_TYPES = ['a complication', 'an opportunity', 'an unexpected arrival', 'a small discovery', 'an environment shift', 'a rumor or overheard word'];
+    const EVENT_TONES = ['tense', 'mundane', 'comic', 'ominous', 'warm', 'dramatic'];
+
+    function rollEventTick(dc, rng) {
+        const r = rng || Math.random;
+        const roll = Math.floor(r() * 100) + 1;
+        if (roll >= dc) {
+            return {
+                fired: true,
+                type: EVENT_TYPES[Math.floor(r() * EVENT_TYPES.length)],
+                tone: EVENT_TONES[Math.floor(r() * EVENT_TONES.length)],
+                nextDC: 96,
+            };
+        }
+        return { fired: false, nextDC: Math.max(20, dc - 3) };
+    }
+
     globalThis.ArbiterEngine = {
         probFromDelta, sliceOutcome, rngFloat, TIERS, TIER_RATINGS,
-        PRESETS, EXCHANGE_EFFECTS, applyExchangeEffects, poiseWord,
+        PRESETS, EXCHANGE_EFFECTS, applyExchangeEffects, poiseWord, rollEventTick,
     };
 
     /* ------------------------------------------------------------------ */
@@ -264,6 +282,8 @@
         mode: 'adjudicated',      // adjudicated | fast (fast = zero-LLM pre-rolled pool)
         preset: 'realistic',      // gritty | realistic | heroic
         autoDuel: true,           // let the adjudicator open/close duels from the fiction
+        autoBattle: true,         // let the adjudicator open group battles from the fiction
+        eventEngine: false,       // ambient escalating random events (pity-timer RNG)
         duelPoise: 5,             // default poise pool (sheet "poise" per actor overrides)
         showHud: true,
         debug: false,
@@ -483,7 +503,8 @@
         ' "circumstance": <integer -3..3>,',
         ' "why": "<one short clause justifying circumstance>",',
         ' "stakes": "<what success or failure means here, one short clause>",',
-        ' "duel_start": null | "<opponent name — ONLY if this action clearly initiates sustained personal combat (a duel/fight/battle) between the actor and that opponent right now>"}',
+        ' "duel_start": null | "<opponent name — ONLY if this action clearly initiates sustained ONE-ON-ONE combat between the actor and that opponent right now>",',
+        ' "battle_start": null | {"allies": ["<name>", ...], "enemies": ["<name or Bandit x3>", ...]} — ONLY if GROUP combat (2+ combatants on at least one side) clearly begins right now; list combatants by name, allies EXCLUDING the player character}',
         '',
         'Rules:',
         '- check=false for dialogue, routine or trivial actions with no meaningful chance of interesting failure, pure narration, OOC talk, or actions attempted by characters other than the player.',
@@ -529,7 +550,244 @@
             why: String(obj.why || '').slice(0, 160),
             stakes: String(obj.stakes || '').slice(0, 160),
             duel_start: (typeof obj.duel_start === 'string' && obj.duel_start.trim()) ? obj.duel_start.trim().slice(0, 60) : null,
+            battle_start: normalizeRoster(obj.battle_start),
         };
+    }
+
+    function normalizeRoster(bs) {
+        if (!bs || typeof bs !== 'object') return null;
+        const cleanList = (a) => Array.isArray(a)
+            ? a.map(x => String(x || '').trim().slice(0, 60)).filter(Boolean).slice(0, 8)
+            : [];
+        const allies = cleanList(bs.allies);
+        const enemies = cleanList(bs.enemies);
+        if (!enemies.length) return null;
+        return { allies, enemies };
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Battle mode — party / battlefield engagements                       */
+    /* ------------------------------------------------------------------ */
+
+    const BATTLE_SYSTEM = [
+        'You are Arbiter, refereeing one round of an ACTIVE group battle in a roleplay. Score the player\'s move for this round. You NEVER decide who wins — only the parameters. Output STRICT JSON only: one object, no markdown, no commentary.',
+        '',
+        'Schema:',
+        '{"exchange": true|false,',
+        ' "move_kind": "fight" | "command",',
+        ' "target": "<standing enemy name from the roster, or null>",',
+        ' "action": "<the move, 3-10 words>",',
+        ' "circumstance": <integer -3..3>,',
+        ' "why": "<one short clause>",',
+        ' "combat_ended": true|false}',
+        '',
+        'Rules:',
+        '- move_kind "fight": the player personally engages one enemy (use "target"). move_kind "command": the player directs the whole side — orders, tactics, formation, rallying.',
+        '- In an active battle nearly every player turn IS an exchange — the enemy presses regardless. Passive or hesitant turns are exchanges with NEGATIVE circumstance.',
+        '- exchange=false only for a genuine lull with no fighting possible.',
+        '- circumstance rewards concrete tactics, terrain, exploited weaknesses (+); penalizes impairment, bad position, chaos (-). 0 if nothing notable.',
+        '- combat_ended=true ONLY if the fiction has already clearly ended the battle (rout, surrender, separation, scene left combat).',
+    ].join('\n');
+
+    function normalizeBattleAdj(obj) {
+        if (!obj || typeof obj !== 'object') return null;
+        if (obj.combat_ended === true) return { combat_ended: true };
+        if (obj.exchange === false) return { exchange: false };
+        if (obj.exchange !== true) return null;
+        return {
+            exchange: true,
+            kind: obj.move_kind === 'command' ? 'command' : 'fight',
+            target: (typeof obj.target === 'string' && obj.target.trim()) ? obj.target.trim().slice(0, 60) : null,
+            action: String(obj.action || 'the exchange').slice(0, 140),
+            circumstance: clamp(Math.round(Number(obj.circumstance) || 0), -3, 3),
+            why: String(obj.why || '').slice(0, 160),
+        };
+    }
+
+    function battleActive(meta) {
+        return !!(meta && meta.battle && meta.battle.active && !meta.battle.over);
+    }
+
+    /** Expand roster names ("Bandit x3") into unit objects with sheet lookups. */
+    function buildUnits(meta, names, domain, isEnemySide) {
+        const s = getSettings();
+        const fallback = clamp(s.defaultRating, 0, 10);
+        const units = [];
+        for (const raw of names) {
+            const m = raw.match(/^(.*?)(?:\s*[x×]\s*(\d{1,2}))\s*$/i);
+            const base = (m ? m[1] : raw).trim();
+            const count = m ? clamp(parseInt(m[2], 10), 1, 8) : 1;
+            for (let i = 1; i <= count && units.length < 10; i++) {
+                const name = count > 1 ? base + ' ' + i : base;
+                const entry = findActor(meta, base) || findActor(meta, name);
+                const rating = entry ? ratingFor(entry, domain, fallback)
+                    : (isEnemySide ? clamp(TIER_RATINGS.trained, 0, 10) : fallback);
+                const poise = poiseFor(entry, s.duelPoise);
+                units.push({ name, rating, poise, maxPoise: poise, injuries: 0, momentum: 0, opening: false, standing: true, isPlayer: false });
+            }
+        }
+        return units;
+    }
+
+    function startBattle(meta, allyNames, enemyNames, domain) {
+        const s = getSettings();
+        const d = String(domain || 'melee').toLowerCase();
+        const playerName = ctx().name1 || 'Player';
+        const pEntry = findActor(meta, playerName);
+        const mc = {
+            name: playerName,
+            rating: ratingFor(pEntry, d, clamp(s.defaultRating, 0, 10)),
+            poise: poiseFor(pEntry, s.duelPoise), maxPoise: poiseFor(pEntry, s.duelPoise),
+            injuries: 0, momentum: 0, opening: false, standing: true, isPlayer: true,
+        };
+        const allies = buildUnits(meta, (allyNames || []).filter(n => n.toLowerCase() !== playerName.toLowerCase()), d, false);
+        const enemies = buildUnits(meta, enemyNames || [], d, true);
+        if (!enemies.length) return null;
+        meta.battle = {
+            active: true, over: false, victor: null, mcDown: false, round: 0, domain: d,
+            allies: [mc].concat(allies),
+            enemies,
+        };
+        dlog('battle started:', meta.battle.allies.length, 'vs', enemies.length, '(' + d + ')');
+        return meta.battle;
+    }
+
+    function endBattle(meta, silent) {
+        if (meta && meta.battle) meta.battle = null;
+        renderHud();
+        if (!silent) toast('info', 'Battle ended.');
+    }
+
+    const standing = (units) => units.filter(u => u.standing);
+    const moraleOf = (units) => units.length ? standing(units).length / units.length : 0;
+    const moraleWord = (f) => f > 0.75 ? 'steady' : f > 0.4 ? 'wavering' : f > 0 ? 'breaking' : 'broken';
+
+    /** One ally-vs-enemy pairing, from the ally's perspective. Returns a report line. */
+    function resolvePairing(a, e, extraDelta, preset) {
+        const delta = clamp((a.rating - a.injuries + a.momentum) - (e.rating - e.injuries + e.momentum) + extraDelta + preset.bonus, -13, 13);
+        const tier = sliceOutcome(probFromDelta(delta), rngFloat(), preset.mods);
+        const r = applyExchangeEffects(a, e, tier);
+        Object.assign(a, r.player); Object.assign(e, r.opp);
+        if (a.poise <= 0) a.standing = false;
+        if (e.poise <= 0) e.standing = false;
+        if (!e.standing) return a.name + ' puts ' + e.name + ' out of the fight.';
+        if (!a.standing) return e.name + ' takes ' + a.name + ' down.';
+        const fx = EXCHANGE_EFFECTS[tier] || {};
+        if (fx.winner === 'self') return a.name + ' gets the better of ' + e.name + ' (' + e.name + ' is ' + poiseWord(e.poise, e.maxPoise) + ').';
+        return e.name + ' pressures ' + a.name + ' (' + a.name + ' is ' + poiseWord(a.poise, a.maxPoise) + ').';
+    }
+
+    /** Resolve one battle round for the player's scored move. */
+    function resolveBattleRound(meta, mv) {
+        const b = meta.battle;
+        const preset = getPreset();
+        const mAll = clamp(Math.round((moraleOf(b.allies) - moraleOf(b.enemies)) * 2) / 2, -1, 1);
+        const mc = b.allies.find(u => u.isPlayer);
+        const reports = [];
+        let mcRes = null;
+        let sideMod = 0;
+        let mcTargetName = null;
+
+        if (mv.kind === 'command') {
+            const oppLead = Math.max(3, ...standing(b.enemies).map(u => u.rating));
+            const openingBonus = mc.opening ? 1 : 0; mc.opening = false;
+            const delta = clamp(mc.rating - mc.injuries + openingBonus - oppLead + mv.circumstance + preset.bonus + mAll, -13, 13);
+            const P = probFromDelta(delta); const u = rngFloat();
+            const tier = sliceOutcome(P, u, preset.mods);
+            sideMod = ({ DECISIVE: 2, SUCCESS: 1, SUCCESS_COST: 1, SETBACK: -1, FAILURE: -1, DISASTER: -2 })[tier] || 0;
+            if (tier === 'SUCCESS_COST' || tier === 'DISASTER') { mc.poise = Math.max(0, mc.poise - 0.5); if (mc.poise <= 0) mc.standing = false; }
+            mcRes = { delta, P, u, tier, command: true };
+        } else {
+            let target = standing(b.enemies).find(u => mv.target && u.name.toLowerCase() === mv.target.toLowerCase());
+            if (!target) target = standing(b.enemies).slice().sort((x, y) => y.rating - x.rating)[0];
+            if (target) {
+                mcTargetName = target.name;
+                const openingBonus = mc.opening ? 1 : 0; mc.opening = false;
+                const delta = clamp((mc.rating - mc.injuries + mc.momentum + openingBonus) - (target.rating - target.injuries + target.momentum) + mv.circumstance + preset.bonus + mAll, -13, 13);
+                const P = probFromDelta(delta); const u = rngFloat();
+                const tier = sliceOutcome(P, u, preset.mods);
+                const r = applyExchangeEffects(mc, target, tier);
+                Object.assign(mc, r.player); Object.assign(target, r.opp);
+                if (mc.poise <= 0) mc.standing = false;
+                if (target.poise <= 0) target.standing = false;
+                mcRes = { delta, P, u, tier, command: false };
+            }
+        }
+
+        // Auto-resolve the rest of the field: pair standing allies vs enemies.
+        const freeAllies = standing(b.allies).filter(u => !u.isPlayer);
+        const freeEnemies = standing(b.enemies).filter(u => u.name !== mcTargetName);
+        const A = freeAllies.slice().sort((x, y) => y.rating - x.rating);
+        const Ev = freeEnemies.slice().sort((x, y) => y.rating - x.rating);
+        const pairs = Math.min(A.length, Ev.length);
+        const gang = A.length === Ev.length ? 0 : (A.length > Ev.length ? 1 : -1); // outnumbering side supports its pairs
+        for (let i = 0; i < pairs; i++) {
+            reports.push(resolvePairing(A[i], Ev[i], sideMod + mAll + gang, preset));
+        }
+
+        b.round += 1;
+        if (!standing(b.enemies).length) { b.over = true; b.victor = 'allies'; }
+        else if (!standing(b.allies).length) { b.over = true; b.victor = 'enemies'; }
+        else if (!mc.standing) {
+            // The MC is out: conclude the field fairly, without player agency.
+            b.mcDown = true;
+            let guard = 0;
+            while (!b.over && guard++ < 6) {
+                const As = standing(b.allies).filter(u => !u.isPlayer).sort((x, y) => y.rating - x.rating);
+                const Es = standing(b.enemies).sort((x, y) => y.rating - x.rating);
+                if (!As.length) { b.over = true; b.victor = 'enemies'; break; }
+                if (!Es.length) { b.over = true; b.victor = 'allies'; break; }
+                const n = Math.min(As.length, Es.length);
+                const g2 = As.length === Es.length ? 0 : (As.length > Es.length ? 1 : -1);
+                for (let i = 0; i < n; i++) reports.push(resolvePairing(As[i], Es[i], g2, preset));
+                if (!standing(b.enemies).length) { b.over = true; b.victor = 'allies'; }
+                else if (!standing(b.allies).filter(u => !u.isPlayer).length) { b.over = true; b.victor = 'enemies'; }
+            }
+            if (!b.over) {
+                const aSum = standing(b.allies).filter(u => !u.isPlayer).reduce((t, u) => t + u.rating, 0);
+                const eSum = standing(b.enemies).reduce((t, u) => t + u.rating, 0);
+                b.over = true; b.victor = aSum >= eSum ? 'allies' : 'enemies';
+            }
+        }
+        return { mcRes, reports };
+    }
+
+    function buildBattleDirective(meta, adj, out) {
+        const b = meta.battle;
+        const mc = b.allies.find(u => u.isPlayer);
+        const lines = [
+            '[ARBITER — battle, round ' + b.round + ': ' + standing(b.allies).length + '/' + b.allies.length + ' vs ' + standing(b.enemies).length + '/' + b.enemies.length + ']',
+        ];
+        if (out.mcRes) {
+            const t = TIERS[out.mcRes.tier] || TIERS.FAILURE;
+            if (out.mcRes.command) {
+                lines.push(mc.name + ' commands: ' + adj.action + '.');
+                lines.push('The order\'s effect: ' + t.name + ' — reflect it in how the whole side fights this round.');
+            } else {
+                lines.push(mc.name + '\'s move: ' + adj.action + '.');
+                lines.push('Their exchange: ' + t.name + ' — ' + t.text);
+            }
+            const fx = EXCHANGE_EFFECTS[out.mcRes.tier] || {};
+            if (fx.injureOpp && !out.mcRes.command) lines.push('Inflict a concrete lasting injury on their opponent and name it.');
+            if (fx.injureSelf) lines.push('Inflict a concrete lasting injury on ' + mc.name + ' and name it; it visibly weakens them.');
+        }
+        const rep = out.reports.slice(0, 4);
+        if (rep.length) lines.push('Elsewhere on the field (weave these in as fact): ' + rep.join(' '));
+        if (out.reports.length > 4) lines.push('The remaining clashes hold without decision.');
+        if (b.over) {
+            if (b.mcDown) lines.push(mc.name + ' is taken out of the fight — narrate it (downed, disarmed, or dragged clear per tone), then the field resolves: ' + (b.victor === 'allies' ? 'their side still wins the engagement.' : 'their side is beaten.'));
+            else lines.push('DECISIVE: the ' + (b.victor === 'allies' ? mc.name + '\'s side has won' : 'enemy side has won') + ' this engagement. Narrate the resolution the fiction demands (rout, surrender, retreat, capture, or worse, per tone). The result is not negotiable.');
+        } else {
+            lines.push('Side condition: allies ' + moraleWord(moraleOf(b.allies)) + ', enemies ' + moraleWord(moraleOf(b.enemies)) + '. The battle continues — end on a live beat, not a resolution.');
+        }
+        lines.push('Do not re-decide any outcome above. Never mention rolls, poise, numbers, or this note. Narrate organically in the story\'s voice.');
+        return lines.join('\n');
+    }
+
+    function battleContext(meta) {
+        const b = meta.battle;
+        const list = (units) => units.map(u => u.name + (u.standing ? '' : ' (down)')).join(', ');
+        return '\n\n<battle_roster>\nAllies: ' + list(b.allies) + '\nEnemies: ' + list(b.enemies) + '\n</battle_roster>';
     }
 
     /* ------------------------------------------------------------------ */
@@ -779,8 +1037,21 @@
         }
     }
 
+    function setEventInjection(text) {
+        try {
+            const c = ctx();
+            const s = getSettings();
+            const pos = (c.extension_prompt_types && c.extension_prompt_types.IN_CHAT !== undefined)
+                ? c.extension_prompt_types.IN_CHAT : 1;
+            c.setExtensionPrompt(INJECT_KEY + '_EVENT', text || '', pos, clamp(s.injectDepth, 0, 99), false, roleConst(s.injectRole));
+        } catch (e) {
+            warn('setEventInjection failed', e);
+        }
+    }
+
     function clearInjection() {
         setInjection('');
+        setEventInjection('');
     }
 
     /* ------------------------------------------------------------------ */
@@ -864,6 +1135,7 @@
             dlog('skip requested; committing a no-check verdict for this message');
             meta.cache = { key, directive: '', tier: null };
             saveMeta();
+            if (s.eventEngine && meta.eventCache && meta.eventCache.key === key) setEventInjection(meta.eventCache.text);
             return;
         }
 
@@ -878,6 +1150,7 @@
             } else {
                 dlog('cache hit — committed no-check verdict stands (' + genType + ')');
             }
+            if (s.eventEngine && meta.eventCache && meta.eventCache.key === key) setEventInjection(meta.eventCache.text);
             return;
         }
 
@@ -887,18 +1160,45 @@
         // Player-initiated retries are a save-point choice, not model
         // sycophancy — the odds never bend, only the dice recast.
 
-        // Re-rolling the SAME message (edit or /arb): rewind the duel to the
-        // state it was in before that exchange, or the damage double-applies.
+        // Re-rolling the SAME message (edit or /arb): rewind any fight to the
+        // state it was in before that exchange, or damage double-applies.
         const sendDate = String(lastUser.send_date || '');
         if (meta.cache && meta.cache.sendDate === sendDate && meta.cache.duelSnapshot !== undefined) {
-            meta.duel = meta.cache.duelSnapshot ? JSON.parse(JSON.stringify(meta.cache.duelSnapshot)) : null;
-            dlog('duel state rewound for re-roll of the same message');
+            const snap = meta.cache.duelSnapshot;
+            const copy = (o) => o ? JSON.parse(JSON.stringify(o)) : null;
+            if (snap && typeof snap === 'object' && ('d' in snap || 'b' in snap)) {
+                meta.duel = copy(snap.d);
+                meta.battle = copy(snap.b);
+            } else {
+                meta.duel = copy(snap); // legacy v0.2 snapshot: duel-or-null
+            }
+            dlog('fight state rewound for re-roll of the same message');
         }
-        // A concluded duel clears once the story moves to a new message.
+        // Concluded fights clear once the story moves to a new message.
         if (meta.duel && meta.duel.over) { meta.duel = null; renderHud(); }
+        if (meta.battle && meta.battle.over) { meta.battle = null; renderHud(); }
+
+        // Ambient event engine: replay on the same message, tick on new ones.
+        if (s.eventEngine) {
+            if (meta.eventCache && meta.eventCache.key === key) {
+                setEventInjection(meta.eventCache.text);
+            } else if (genType === 'normal' && !duelActive(meta) && !battleActive(meta)) {
+                const tick = rollEventTick(meta.eventDC ?? 96, rngFloat);
+                meta.eventDC = tick.nextDC;
+                if (tick.fired) {
+                    const txt = '[ARBITER EVENT HINT — weave one ambient beat into this reply: ' + tick.type + ' (' + tick.tone + '). Keep it subtle; do not derail the player\'s action.]';
+                    setEventInjection(txt);
+                    meta.eventCache = { key, text: txt };
+                    dlog('ambient event fired:', tick.type, tick.tone);
+                }
+                saveMeta();
+            }
+        }
 
         const inDuel = duelActive(meta);
-        if (!force && !inDuel && !gatePasses(raw)) {
+        const inBattle = !inDuel && battleActive(meta);
+        const inFight = inDuel || inBattle;
+        if (!force && !inFight && !gatePasses(raw)) {
             dlog('gate: no check plausible');
             return;
         }
@@ -908,18 +1208,22 @@
         const t0 = Date.now();
         try {
             const budget = clamp(s.timeoutMs, 1500, 60000);
-            const duelSnapshot = meta.duel ? JSON.parse(JSON.stringify(meta.duel)) : null;
+            const duelSnapshot = {
+                d: meta.duel ? JSON.parse(JSON.stringify(meta.duel)) : null,
+                b: meta.battle ? JSON.parse(JSON.stringify(meta.battle)) : null,
+            };
             const commitCache = (directive, tier) => { meta.cache = { key, sendDate, directive, tier, duelSnapshot }; };
             const duelToast = (adjAction, res) => {
                 if (!s.toastResults) return;
                 const t = TIERS[res.tier] || {};
-                toast('info', escHtml(adjAction) + (s.showMath ? '<br><small>' + escHtml('Δ=' + (res.delta >= 0 ? '+' : '') + res.delta + ' → P ' + Math.round(res.P * 100) + '% → u ' + (Math.round(res.u * 1000) / 1000)) + '</small>' : ''), 'R' + meta.duel.round + ' · ' + t.name);
+                const rnd = inBattle ? meta.battle.round : (meta.duel ? meta.duel.round : 0);
+                toast('info', escHtml(adjAction) + (s.showMath ? '<br><small>' + escHtml('Δ=' + (res.delta >= 0 ? '+' : '') + res.delta + ' → P ' + Math.round(res.P * 100) + '% → u ' + (Math.round(res.u * 1000) / 1000)) + '</small>' : ''), 'R' + rnd + ' · ' + t.name);
             };
 
             // ── FAST MODE: zero LLM calls, pre-rolled outcomes ──
             if (s.mode === 'fast') {
+                const action = String(lastUser.mes).replace(/\s+/g, ' ').slice(0, 90);
                 if (inDuel) {
-                    const action = String(lastUser.mes).replace(/\s+/g, ' ').slice(0, 90);
                     const res = resolveDuelExchange(meta, 0);
                     const directive = buildDuelDirective(meta, { action }, res);
                     setInjection(directive);
@@ -927,6 +1231,14 @@
                     pushLog(meta, { action, domain: meta.duel.domain, actor: meta.duel.player.name, circumstance: 0, why: 'fast' }, res, meta.duel.round);
                     saveMeta(); renderHud(); renderLog();
                     duelToast(action, res);
+                } else if (inBattle) {
+                    const out = resolveBattleRound(meta, { kind: 'fight', target: null, action, circumstance: 0 });
+                    const directive = buildBattleDirective(meta, { action }, out);
+                    setInjection(directive);
+                    commitCache(directive, out.mcRes ? out.mcRes.tier : null);
+                    if (out.mcRes) pushLog(meta, { action, domain: meta.battle.domain, actor: ctx().name1 || 'Player', circumstance: 0, why: 'fast' }, out.mcRes, meta.battle.round);
+                    saveMeta(); renderHud(); renderLog();
+                    if (out.mcRes) duelToast(action, out.mcRes);
                 } else {
                     const directive = buildFastDirective(meta, lastUser);
                     setInjection(directive);
@@ -938,11 +1250,13 @@
             }
 
             // ── ADJUDICATED MODE ──
-            const sysPrompt = inDuel ? DUEL_SYSTEM : ADJ_SYSTEM;
-            const userPrompt = buildAdjUserPrompt(chat, lastUser, meta);
+            const sysPrompt = inDuel ? DUEL_SYSTEM : (inBattle ? BATTLE_SYSTEM : ADJ_SYSTEM);
+            let userPrompt = buildAdjUserPrompt(chat, lastUser, meta);
+            if (inBattle) userPrompt += battleContext(meta);
 
             let rawOut = await callLLM(sysPrompt, userPrompt, 260, budget);
-            let adj = inDuel ? normalizeDuelAdj(extractJson(rawOut)) : normalizeAdj(extractJson(rawOut));
+            const normalize = (r) => inDuel ? normalizeDuelAdj(extractJson(r)) : (inBattle ? normalizeBattleAdj(extractJson(r)) : normalizeAdj(extractJson(r)));
+            let adj = normalize(rawOut);
 
             // One fast retry if the model returned junk and time remains.
             if (!adj && rawOut && (Date.now() - t0) < budget - 1500) {
@@ -950,11 +1264,36 @@
                 rawOut = await callLLM(
                     sysPrompt + '\n\nYour previous output was invalid. Output ONLY the JSON object.',
                     userPrompt, 260, budget - (Date.now() - t0));
-                adj = inDuel ? normalizeDuelAdj(extractJson(rawOut)) : normalizeAdj(extractJson(rawOut));
+                adj = normalize(rawOut);
             }
 
             if (!adj) {
                 dlog('adjudicator unavailable or invalid — turn proceeds unmodified');
+                return;
+            }
+
+            if (inBattle) {
+                if (adj.combat_ended) {
+                    endBattle(meta, true);
+                    commitCache('', null);
+                    saveMeta();
+                    toast('info', 'The fiction ended the battle.');
+                    return;
+                }
+                if (adj.exchange === false) {
+                    dlog('battle lull — no round this turn');
+                    commitCache('', null);
+                    saveMeta();
+                    return;
+                }
+                const out = resolveBattleRound(meta, adj);
+                const directive = buildBattleDirective(meta, adj, out);
+                setInjection(directive);
+                commitCache(directive, out.mcRes ? out.mcRes.tier : null);
+                if (out.mcRes) pushLog(meta, { action: adj.action, domain: meta.battle.domain, actor: ctx().name1 || 'Player', circumstance: adj.circumstance, why: adj.why }, out.mcRes, meta.battle.round);
+                saveMeta(); renderHud(); renderLog();
+                dlog('battle round', meta.battle.round, 'resolved in', Date.now() - t0, 'ms');
+                if (out.mcRes) duelToast(adj.action, out.mcRes);
                 return;
             }
 
@@ -992,7 +1331,7 @@
 
             // Auto duel start: this attempt initiates sustained combat, so it
             // resolves as round 1 of a fresh duel.
-            if (adj.duel_start && s.autoDuel) {
+            if (adj.duel_start && !adj.battle_start && s.autoDuel) {
                 startDuel(meta, adj.actor, adj.duel_start, adj.domain);
                 const res = resolveDuelExchange(meta, adj.circumstance);
                 const directive = buildDuelDirective(meta, adj, res);
@@ -1002,6 +1341,22 @@
                 saveMeta(); renderHud(); renderLog();
                 toast('info', escHtml(meta.duel.player.name + ' vs ' + meta.duel.opp.name), 'DUEL — R1 · ' + (TIERS[res.tier] || {}).name);
                 return;
+            }
+
+            // Auto battle start: group combat begins — this attempt resolves
+            // as round 1 of a fresh battle.
+            if (adj.battle_start && s.autoBattle) {
+                const started = startBattle(meta, adj.battle_start.allies, adj.battle_start.enemies, adj.domain);
+                if (started) {
+                    const out = resolveBattleRound(meta, { kind: 'fight', target: null, action: adj.action, circumstance: adj.circumstance });
+                    const directive = buildBattleDirective(meta, adj, out);
+                    setInjection(directive);
+                    commitCache(directive, out.mcRes ? out.mcRes.tier : null);
+                    if (out.mcRes) pushLog(meta, adj, out.mcRes, meta.battle.round);
+                    saveMeta(); renderHud(); renderLog();
+                    toast('info', escHtml(standing(meta.battle.allies).length + ' vs ' + standing(meta.battle.enemies).length), 'BATTLE — R1');
+                    return;
+                }
             }
 
             const res = resolveAdj(adj, meta);
@@ -1066,7 +1421,25 @@
             parts.push(line);
         }
         const existing = JSON.stringify(meta.sheet || { actors: {} });
-        const userPrompt = '<existing_sheet>\n' + existing + '\n</existing_sheet>\n\n<transcript>\n' +
+
+        // Memory-aware seeding: include what the memory extensions inject
+        // (Summaryception snippets, notepads, Author's Note), so ratings can
+        // draw on established canon, not just the recent transcript.
+        let memoryBlock = '';
+        try {
+            const eps = c.extensionPrompts || c.extension_prompts || {};
+            const memRe = /summar|ception|memory|qvink|notepad/i;
+            const chunks = [];
+            for (const [k, v] of Object.entries(eps)) {
+                const val = v && typeof v === 'object' ? v.value : v;
+                if (memRe.test(k) && typeof val === 'string' && val.trim()) chunks.push(val.trim());
+            }
+            const md = c.chatMetadata || c.chat_metadata || {};
+            if (typeof md.note_prompt === 'string' && md.note_prompt.trim()) chunks.push(md.note_prompt.trim());
+            if (chunks.length) memoryBlock = '\n\n<memory>\n' + chunks.join('\n---\n').slice(0, 5000) + '\n</memory>';
+        } catch (e) { dlog('memory gather for seeding failed', e); }
+
+        const userPrompt = '<existing_sheet>\n' + existing + '\n</existing_sheet>' + memoryBlock + '\n\n<transcript>\n' +
             parts.reverse().join('\n') + '\n</transcript>';
 
         const out = await callLLM(SEED_SYSTEM, userPrompt, 800, 45000);
@@ -1160,6 +1533,21 @@
         <div id="arb_duel_end" class="menu_button">End duel</div>
       </div>
       <div class="arb_hint">Manual duel controls — same as /duel &lt;name&gt; and /duelend. Ratings and poise come from the sheet; unlisted opponents count as trained.</div>
+      <div class="arb_row">
+        <label class="checkbox_label"><input id="arb_autobattle" type="checkbox"><span>Auto battle</span></label>
+        <label class="checkbox_label"><input id="arb_eventengine" type="checkbox"><span>Event engine</span></label>
+      </div>
+      <div class="arb_hint">Auto battle: the referee opens GROUP fights from the fiction (party vs party, MC vs a gang). Event engine: escalating ambient randomness — the longer nothing happens, the likelier a subtle complication/opportunity/arrival hint fires (never during fights).</div>
+      <div class="arb_row">
+        <label>Battle</label>
+        <input id="arb_battle_allies" type="text" class="text_pole" placeholder="allies: Stella, Alexia">
+        <input id="arb_battle_enemies" type="text" class="text_pole" placeholder="enemies: Bandit x3, Ogre">
+      </div>
+      <div class="arb_buttons">
+        <div id="arb_battle_start" class="menu_button">Start battle</div>
+        <div id="arb_battle_end" class="menu_button">End battle</div>
+      </div>
+      <div class="arb_hint">Manual battle — same as /battle allies | enemies (e.g. /battle Stella, Alexia | Bandit x3, Ogre). You are added to the allies automatically; "x3" clones a unit; unlisted enemies count as trained. Your turns are scored as a personal fight or a command to the whole side; everyone else auto-resolves each round.</div>
       <div class="arb_row">
         <label>Inject depth</label><input id="arb_depth" type="number" min="0" max="99" class="text_pole arb_num">
         <label>Inject role</label>
@@ -1263,8 +1651,9 @@
             const s = getSettings();
             const meta = getMeta();
             const duel = meta && meta.duel;
+            const battle = meta && meta.battle;
             let el = document.getElementById('arb_hud');
-            if (!duel || !duel.active || !s.showHud) { if (el) el.remove(); return; }
+            if ((!duel || !duel.active) && (!battle || !battle.active) || !s.showHud) { if (el) el.remove(); return; }
             if (!el) {
                 el = document.createElement('div');
                 el.id = 'arb_hud';
@@ -1272,9 +1661,29 @@
                 el.addEventListener('click', (ev) => {
                     if (ev.target && ev.target.classList && ev.target.classList.contains('arb_hud_x')) {
                         const m = getMeta();
-                        if (m) { endDuel(m, false); saveMeta(); }
+                        if (m && m.battle) { endBattle(m, false); saveMeta(); }
+                        else if (m && m.duel) { endDuel(m, false); saveMeta(); }
                     }
                 });
+            }
+            if (battle && battle.active) {
+                const mc = battle.allies.find(u => u.isPlayer) || battle.allies[0];
+                const sideBar = (units, cls) => {
+                    const cur = standing(units).reduce((t, u) => t + Math.max(0, u.poise), 0);
+                    const max = units.reduce((t, u) => t + u.maxPoise, 0) || 1;
+                    const pct = Math.max(0, Math.min(100, Math.round((cur / max) * 100)));
+                    return '<span class="arb_hud_bar ' + cls + '"><span style="width:' + pct + '%"></span></span>';
+                };
+                const status = battle.over
+                    ? '<b class="arb_hud_over">' + (battle.victor === 'allies' ? 'ALLIES WIN' : 'ENEMIES WIN') + '</b>'
+                    : '<b>R' + battle.round + '</b>';
+                el.innerHTML = status +
+                    ' <span class="arb_hud_name">Allies ' + standing(battle.allies).length + '/' + battle.allies.length + '</span>' + sideBar(battle.allies, 'pl') +
+                    '<span class="arb_hud_vs">⚔</span>' + sideBar(battle.enemies, 'op') +
+                    '<span class="arb_hud_name">' + standing(battle.enemies).length + '/' + battle.enemies.length + ' Enemies</span>' +
+                    '<span class="arb_hud_val">· ' + escHtml(mc.name) + ' ' + Math.max(0, mc.poise) + '/' + mc.maxPoise + (mc.injuries ? ' ✚' + mc.injuries : '') + '</span>' +
+                    '<span class="arb_hud_x" title="End battle">✕</span>';
+                return;
             }
             const status = duel.over
                 ? '<b class="arb_hud_over">' + escHtml((duel.victor === 'player' ? duel.player.name : duel.opp.name)) + ' WINS</b>'
@@ -1317,6 +1726,20 @@
             toast('success', (ctx().name1 || 'Player') + ' vs ' + name + ' — duel armed. Your next message is round 1.');
         });
         $('#arb_duel_end').on('click', () => { const m = getMeta(); if (m && m.duel) { endDuel(m); saveMeta(); } });
+
+        $('#arb_autobattle').prop('checked', !!s.autoBattle).on('change', function () { s.autoBattle = this.checked; saveSettings(); });
+        $('#arb_eventengine').prop('checked', !!s.eventEngine).on('change', function () { s.eventEngine = this.checked; saveSettings(); });
+        $('#arb_battle_start').on('click', () => {
+            const allies = String($('#arb_battle_allies').val() || '').split(',').map(x => x.trim()).filter(Boolean);
+            const enemies = String($('#arb_battle_enemies').val() || '').split(',').map(x => x.trim()).filter(Boolean);
+            if (!enemies.length) { toast('warning', 'Name at least one enemy.'); return; }
+            const meta = getMeta(); if (!meta) return;
+            const b = startBattle(meta, allies, enemies, 'melee');
+            if (!b) { toast('error', 'Battle setup failed.'); return; }
+            saveMeta(); renderHud();
+            toast('success', standing(b.allies).length + ' vs ' + standing(b.enemies).length + ' — battle armed. Your next message is round 1.');
+        });
+        $('#arb_battle_end').on('click', () => { const m = getMeta(); if (m && m.battle) { endBattle(m); saveMeta(); } });
 
         $('#arb_profile').on('change', function () { s.profileId = this.value; saveSettings(); });
         $('#arb_profile_refresh').on('click', refreshProfiles);
@@ -1377,6 +1800,22 @@
                 return '';
             }, 'Start a duel against <opponent name>.'],
             ['duelend', () => { const m = getMeta(); if (m && m.duel) { endDuel(m); saveMeta(); } return ''; }, 'End the active duel.'],
+            ['battle', (na, text) => {
+                const t = String(text || '');
+                const parts = t.split('|');
+                const enemiesStr = parts.length > 1 ? parts[1] : parts[0];
+                const alliesStr = parts.length > 1 ? parts[0] : '';
+                const allies = alliesStr.split(',').map(x => x.trim()).filter(Boolean);
+                const enemies = enemiesStr.split(',').map(x => x.trim()).filter(Boolean);
+                if (!enemies.length) { toast('warning', 'Usage: /battle allies | enemies  (e.g. /battle Stella, Alexia | Bandit x3, Ogre)'); return ''; }
+                const m = getMeta(); if (!m) return '';
+                const b = startBattle(m, allies, enemies, 'melee');
+                if (!b) { toast('error', 'Battle setup failed.'); return ''; }
+                saveMeta(); renderHud();
+                toast('success', standing(b.allies).length + ' vs ' + standing(b.enemies).length + ' — battle armed. Your next message is round 1.');
+                return '';
+            }, 'Start a group battle: /battle allies | enemies (allies optional; x3 clones a unit).'],
+            ['battleend', () => { const m = getMeta(); if (m && m.battle) { endBattle(m); saveMeta(); } return ''; }, 'End the active battle.'],
         ];
         let registered = false;
         try {

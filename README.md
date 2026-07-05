@@ -70,7 +70,9 @@ so realism properties hold automatically (verified by Monte Carlo test):
    works, but if your main model is a slow thinking model, checks will be slow
    too (the timeout still protects you).
 3. Open your RP chat → press **Seed sheet from story** (or `/arbseed`). Arbiter
-   reads recent messages and builds a capability sheet. Edit it in the panel —
+   reads recent messages **and your memory extensions' injections** (snippets,
+   notepads, Author's Note) and builds a capability sheet. Re-run it whenever
+   characters have grown. Edit it in the panel —
    it's plain JSON, per chat.
 
 ## Usage
@@ -82,6 +84,7 @@ Fully automatic. Manual controls:
 - `/arbskip` (or **Skip next**) — skip the next check.
 - `/arbseed` — rebuild the capability sheet from the story.
 - `/duel <opponent>` / `/duelend` — open or close a duel manually.
+- `/battle allies | enemies` / `/battleend` — open or close a group battle.
 - Inline tags (configurable): put `[roll]` in a message to force, `[skip]` to skip.
 
 **Same action = same fate.** Swipes and regenerates of an unchanged message
@@ -169,7 +172,39 @@ disadvantaged) is injected and the storyteller picks the footing. Honest
 caveat: that hands footing discretion back to the model, so adjudicated mode
 stays the default; fast also works inside duels (circumstance 0).
 
+## Battles & commander mode (v0.3)
+
+Group fights get the same treatment as duels, scaled up. A **battle** is two
+rosters — you plus named allies vs enemies (`x3` clones a unit) — opened
+automatically when the referee sees group combat begin (**Auto battle**), or
+via `/battle Stella, Alexia | Bandit x3, Ogre` / the panel. Each of your turns
+is one round:
+
+- Your move is scored as a **fight** (personal exchange vs a chosen enemy) or
+  a **command** (directing the whole side — a tactics roll whose tier buffs or
+  debuffs every allied pairing this round). Locker-room scrap or battlefield
+  general: same machinery, different move kind.
+- **Everyone else auto-resolves**: standing allies pair against standing
+  enemies by rating, the outnumbering side supports its pairs (+1), and each
+  pairing rolls the same curve — all local RNG, zero extra LLM cost, so a 4v5
+  round costs exactly one referee call.
+- **Morale is emergent**: the side-strength gap shifts every pairing by up to
+  ±1, so routs snowball and last stands are steep but real.
+- Beaten means out of the fight (down/disarmed/routed as fiction demands),
+  not dead — the prose decides the flavor, never the fact. If **you** go
+  down, the field auto-resolves fairly and the directive narrates the
+  aftermath: your side can still carry the day and drag you clear.
+- The HUD shows side bars, standing counts, and your own poise chip.
+
+## Event engine (v0.3, off by default)
+
+Escalating ambient randomness, real RNG: every quiet turn the trigger
+threshold drops, so the longer nothing happens the likelier a subtle hint
+fires — a complication, an opportunity, an arrival — injected as a one-line
+nudge the storyteller must weave in without derailing you. Never fires during
+fights; the same event replays across swipes.
+
 ## Roadmap
 
-- v0.3 — opposed NPC-vs-NPC checks, multi-opponent duels, per-domain duel
-  tactics (switching domains mid-fight), richer injury vocabulary.
+- v0.4 — per-domain duel tactics (switching domains mid-fight), richer injury
+  vocabulary, configurable event tables.
