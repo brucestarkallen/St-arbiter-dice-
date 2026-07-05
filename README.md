@@ -281,6 +281,26 @@ trade drops both fighters at once. Tune frequency with the **Tie window**
 under Outcome feel (0 disables; 0.06 default; higher = more ties); it affects
 only fighting exchanges, never single checks.
 
+## Smarter seeding: event-driven, optional 2nd connection (v0.15)
+
+The old fixed "every N turns" seed timer was dumb — it re-read the cast on an
+arbitrary schedule disconnected from when characters actually change. Replaced
+with event-driven seeding:
+
+- **Post-fight is the primary trigger.** A duel or battle ending is exactly
+  when combatants changed — wounded, revealed power, leveled, broke — so the
+  sheet re-seeds right after a fight resolves, capturing all of it at the
+  moment it matters instead of waiting for a counter.
+- **First-appearance seeding** still fires when a fight opens against someone
+  not yet rated (they get a live estimate immediately, refined by the seed).
+- **The turn timer is now just a slow fallback** (default 100, up from 50) — a
+  backstop so a long fightless stretch of pure dialogue-growth still refreshes
+  eventually. It is no longer the main mechanism.
+- **Optional separate seeding connection.** You can now point seeding at its own
+  Connection Manager profile — a cheap, high-context model for the bulk
+  background job — so building the sheet never competes with your fast live
+  adjudicator. Empty = use the adjudicator profile as before.
+
 ## Anti-sycophancy audit (v0.14.1)
 
 A deep fairness pass fixed real biases and proved the system cannot flatter

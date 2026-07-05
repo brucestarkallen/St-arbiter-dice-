@@ -398,6 +398,7 @@
     const DEFAULTS = {
         enabled: true,
         profileId: '',            // Connection Manager profile for the adjudicator
+        seedProfileId: '',        // OPTIONAL separate profile for seeding (bulk/background); empty = use adjudicator profile
         timeoutMs: 6000,          // hard budget for the micro-call; on expiry: skip
         ctxMsgs: 6,               // recent messages given to the adjudicator
         sensitivity: 'normal',    // conservative | normal | aggressive
@@ -417,7 +418,7 @@
         warStrength: 10,          // default formation strength pool (sheet 'poise' overrides)
         eventEngine: true,        // ambient escalating random events (pity-timer RNG)
         autoSeed: true,           // background sheet/thread seeding — no commands needed
-        autoSeedEvery: 50,        // re-read story+memory every N turns to learn new faces
+        autoSeedEvery: 100,       // FALLBACK timer only; post-fight seeding is primary
         seedTranscriptK: 80,      // seed transcript window in thousands of chars (2026-scale default)
         seedMemoryK: 60,          // seed memory block in thousands of chars — ingest full Summaryception context
         seedOutTokens: 4000,      // max tokens the seeder may emit (large casts fit comfortably)
@@ -566,7 +567,7 @@
      * One guarded LLM call. Returns a trimmed string ('' on any failure).
      * Never throws. Respects the hard time budget.
      */
-    async function callLLM(systemText, userText, maxTokens, budgetMs) {
+    async function callLLM(systemText, userText, maxTokens, budgetMs, profileOverride) {
         const c = ctx();
         const s = getSettings();
         const started = Date.now();
@@ -583,7 +584,7 @@
         };
 
         try {
-            const pid = s.profileId;
+            const pid = profileOverride || s.profileId;
             const svc = c.ConnectionManagerRequestService;
             if (pid && svc && typeof svc.sendRequest === 'function') {
                 const messages = [
@@ -1506,7 +1507,7 @@
         }
         const mem = collectMemoryBlock(clamp(ts.seedMemoryK, 2, 500) * 1000);
         const existing = meta.threads.map(t => t.name).join(', ') || 'none';
-        const out = await callLLM(THREAD_SEED_SYSTEM, (mem.block ? mem.block + '\n\n' : '') + '<existing_threads>' + existing + '</existing_threads>\n\n<transcript>\n' + parts.reverse().join('\n') + '\n</transcript>', 700, 45000);
+        const out = await callLLM(THREAD_SEED_SYSTEM, (mem.block ? mem.block + '\n\n' : '') + '<existing_threads>' + existing + '</existing_threads>\n\n<transcript>\n' + parts.reverse().join('\n') + '\n</transcript>', 700, 45000, ts.seedProfileId || undefined);
         clearActivity();
         if (activityCanceled()) { if (!o.auto) toast('warning', 'Thread seed canceled.'); return; }
         let obj = null;
@@ -2130,9 +2131,12 @@
             renderHud();
             dlog('fight + world state rewound for re-roll of the same message; stale fate invalidated');
         }
-        // Concluded fights clear once the story moves to a new message.
-        if (meta.duel && meta.duel.over) { meta.duel = null; }
-        if (meta.battle && meta.battle.over) { meta.battle = null; }
+        // Concluded fights clear once the story moves to a new message. A
+        // finished fight is the highest-value moment to re-seed: combatants were
+        // just wounded, revealed power, leveled, or broke — so mark a seed due
+        // rather than waiting for a blind turn timer.
+        if (meta.duel && meta.duel.over) { meta.duel = null; meta.seedDueAfterFight = true; }
+        if (meta.battle && meta.battle.over) { meta.battle = null; meta.seedDueAfterFight = true; }
         renderHud(); // re-sync every turn: any previously missed render self-heals
 
         if (genType === 'normal') meta.turnCount = (meta.turnCount || 0) + 1;
@@ -2539,7 +2543,7 @@
         const userPrompt = '<existing_sheet>\n' + existing + '\n</existing_sheet>\n\n' + voices + rosterBlock + (mem.block ? mem.block + '\n\n' : '') + '<transcript>\n' +
             parts.reverse().join('\n') + '\n</transcript>';
 
-        const out = await callLLM(SEED_SYSTEM, userPrompt, clamp(s.seedOutTokens, 400, 8000), 60000);
+        const out = await callLLM(SEED_SYSTEM, userPrompt, clamp(s.seedOutTokens, 400, 8000), 60000, s.seedProfileId || undefined);
         clearActivity();
         if (activityCanceled()) { if (!o.auto) toast('warning', 'Seed canceled.'); return; }
         let obj = null;
@@ -2612,12 +2616,20 @@
             const tc = meta.turnCount || 0;
             const every = clamp(s.autoSeedEvery, 10, 500);
             const firstRun = actorsN === 0 && tc >= 2;
+            // PRIMARY trigger: a fight just ended — combatants changed, seed now.
+            const postFight = meta.seedDueAfterFight === true;
+            // FALLBACK: a slow safety-net timer for gradual off-screen change
+            // (training, growth in dialogue) that no fight captured. Not the
+            // main mechanism — just a backstop so the sheet never goes fully
+            // stale in a long fightless stretch.
             const refresh = tc - (meta.lastAutoSeedAt ?? -999999) >= every;
-            if (!firstRun && !refresh) return;
+            if (!firstRun && !postFight && !refresh) return;
             autoSeedRunning = true;
             meta.lastAutoSeedAt = tc;
+            meta.seedDueAfterFight = false;
             saveMeta();
-            dlog('auto-seed pass at turn', tc, firstRun ? '(first run)' : '(refresh)');
+            const reason = firstRun ? '(first run)' : postFight ? '(post-fight)' : '(timer fallback)';
+            dlog('auto-seed pass at turn', tc, reason);
             await seedSheet({ auto: true, firstRun });
             if (s.eventEngine) await seedThreads({ auto: true });
         } catch (e) {
@@ -2658,6 +2670,11 @@
           <div id="arb_profile_refresh" class="menu_button fa-solid fa-rotate" title="Refresh profiles"></div>
         </div>
         <div class="arb_hint">Point this at a fast, non-thinking endpoint. Empty = raw call on the current API (slow if your main model thinks).</div>
+        <div class="arb_row">
+          <label>Seeding profile <span class="arb_dim">(optional)</span></label>
+          <select id="arb_seedprofile" class="text_pole"></select>
+        </div>
+        <div class="arb_hint">A SEPARATE connection for building the capability sheet (a bulk background task). Empty = use the adjudicator profile. Set this to a cheap, high-context model so seeding never competes with your live rulings.</div>
         <div class="arb_row">
           <label>Timeout (ms)</label><input id="arb_timeout" type="number" min="1500" max="60000" step="500" class="text_pole arb_num">
           <label>Context msgs</label><input id="arb_ctx" type="number" min="1" max="10" class="text_pole arb_num">
@@ -2847,6 +2864,18 @@
             sel.append('<option value="' + id + '">' + name + '</option>');
         }
         sel.val(s.profileId || '');
+        // Mirror into the optional seeding-profile selector.
+        const ssel = $('#arb_seedprofile');
+        if (ssel.length) {
+            ssel.empty();
+            ssel.append('<option value="">— same as adjudicator —</option>');
+            for (const p of getProfiles()) {
+                const id = escHtml(p.id || '');
+                const name = escHtml(p.name || p.id || 'profile');
+                ssel.append('<option value="' + id + '">' + name + '</option>');
+            }
+            ssel.val(s.seedProfileId || '');
+        }
     }
 
     function renderSheet() {
@@ -3244,6 +3273,7 @@
         applySettingsToUI();
 
         $('#arb_profile').on('change', function () { s.profileId = this.value; saveSettings(); renderStatus(); });
+        $('#arb_seedprofile').on('change', function () { s.seedProfileId = this.value; saveSettings(); });
         $('#arb_profile_refresh').on('click', refreshProfiles);
 
         $('#arb_btn_force').on('click', () => {
