@@ -1539,6 +1539,8 @@
         'Schema:',
         '{"exchange": true|false,',
         ' "move_kind": "attack" | "recover",',
+        ' "opp_composure": <integer -2..2 — how THIS moment affects the OPPONENT\'s nerve: negative when the player\'s action frightens, awes, or demoralizes them (a brutal display, a revealed power, their ally falling); positive when they rally or steel themselves. 0 usually.>",',
+        ' "self_composure": <integer -2..2 — how THIS moment affects the PLAYER\'s nerve in the fight: negative under terror or horror, positive on a grounding surge. 0 usually.>",',
         ' "action": "<the move, 3-10 words>",',
         ' "circumstance": <integer -3..3>,',
         ' "why": "<one short clause>",',
@@ -1562,6 +1564,8 @@
         return {
             exchange: true,
             moveKind: obj.move_kind === 'recover' ? 'recover' : 'attack',
+            oppComposure: clamp(Math.round(Number(obj.opp_composure) || 0), -2, 2),
+            selfComposure: clamp(Math.round(Number(obj.self_composure) || 0), -2, 2),
             action: String(obj.action || 'the exchange').slice(0, 140),
             circumstance: clamp(Math.round(Number(obj.circumstance) || 0), -3, 3),
             why: String(obj.why || '').slice(0, 160),
@@ -1602,7 +1606,7 @@
             domain: d,
             scaleMismatch: clamp(Math.round(Number(scaleMismatch) || 0), -4, 4),
             player: { name: playerName, rating: ratingFor(pEntry, d, fallback), poise: pPoise, maxPoise: pPoise, injuries: 0, momentum: 0, opening: false },
-            opp: { name: oppName, rating: oppRating, poise: oPoise, maxPoise: oPoise, injuries: 0, momentum: 0, opening: false, estimated: !oEntry && Number.isFinite(oppEstimate) },
+            opp: { name: oppName, rating: oppRating, poise: oPoise, maxPoise: oPoise, injuries: 0, momentum: 0, opening: false, estimated: !oEntry && Number.isFinite(oppEstimate), composure: clamp(s.composureMax, 3, 12), composureMax: clamp(s.composureMax, 3, 12) },
         };
         dlog('duel started:', playerName, 'vs', oppName, '(' + d + ') opp rating', oppRating, 'scale', meta.duel.scaleMismatch, oEntry ? '(sheet)' : (Number.isFinite(oppEstimate) ? '(estimated)' : '(fallback)'));
         return meta.duel;
@@ -1679,8 +1683,9 @@
 
         const effP = duel.player.rating - duel.player.injuries + duel.player.momentum + openingBonus;
         const effO = duel.opp.rating - duel.opp.injuries + duel.opp.momentum;
-        const compPen = composurePenalty(meta);
-        const delta = clamp(effP - effO + circumstance + (duel.scaleMismatch || 0) + compPen + preset.bonus, -13, 13);
+        const compPen = composurePenalty(meta);                    // player's strain (hurts player)
+        const oppCompPen = combatantComposurePenalty(duel.opp);    // opponent's strain (negative → hurts opp)
+        const delta = clamp(effP - effO + circumstance + (duel.scaleMismatch || 0) + compPen - oppCompPen + preset.bonus, -13, 13);
         const P = probFromDelta(delta);
         const u = rngFloat();
         const tier = tieCheck(sliceOutcome(P, u, preset.mods), P, u, getSettings().tieBand);
@@ -1701,6 +1706,12 @@
         let t = side.name + ' is ' + poiseWord(p, side.maxPoise);
         if (side.injuries > 0) t += ', carrying ' + side.injuries + ' lasting injur' + (side.injuries > 1 ? 'ies' : 'y');
         if (side.momentum > 0) t += ', with momentum';
+        // Nerve, if this combatant tracks composure and it has slipped.
+        if (typeof side.composure === 'number' && side.composureMax) {
+            const frac = side.composure / side.composureMax;
+            if (frac < 0.25) t += ', and visibly breaking — panic taking hold';
+            else if (frac < 0.5) t += ', and rattled, nerve fraying';
+        }
         return t;
     }
 
@@ -1801,15 +1812,35 @@
         return { cur: meta.composure, max };
     }
 
+    /** Composure penalty from a {composure, composureMax} holder — works for
+     *  the player (meta) OR any combatant object. Mild strain is harmless;
+     *  below half, focus-dependent capability degrades toward -3. */
+    function composurePenaltyOf(cur, max) {
+        if (typeof cur !== 'number' || typeof max !== 'number' || max <= 0) return 0;
+        const half = max / 2;
+        if (cur >= half) return 0;
+        const frac = (half - cur) / half;
+        return -Math.round(frac * 3);
+    }
+
     function composurePenalty(meta) {
         const s = getSettings();
         if (!s.composure) return 0;
         const { cur, max } = getComposure(meta);
-        const half = max / 2;
-        if (cur >= half) return 0;                 // steady enough — no impairment
-        // Below half, penalty scales from 0 toward -3 as composure nears zero.
-        const frac = (half - cur) / half;          // 0 at half, 1 at zero
-        return -Math.round(frac * 3);
+        return composurePenaltyOf(cur, max);
+    }
+
+    /** A combatant's own composure penalty (0 if composure disabled or the
+     *  combatant has no composure pool — e.g. a mindless construct). */
+    function combatantComposurePenalty(unit) {
+        if (!getSettings().composure || !unit || typeof unit.composure !== 'number') return 0;
+        return composurePenaltyOf(unit.composure, unit.composureMax || unit.composure);
+    }
+
+    /** Erode/restore a combatant's composure in place, clamped. */
+    function shiftCombatantComposure(unit, delta) {
+        if (!unit || typeof unit.composure !== 'number' || !delta) return;
+        unit.composure = clamp(unit.composure + delta, 0, unit.composureMax || unit.composure);
     }
 
     function applyComposureChange(meta, delta) {
@@ -2280,6 +2311,9 @@
                     return;
                 }
                 const res = resolveDuelExchange(meta, adj.circumstance, adj.moveKind);
+                // Fear/steel from this exchange shifts each fighter's nerve.
+                if (adj.oppComposure && meta.duel && meta.duel.opp) shiftCombatantComposure(meta.duel.opp, adj.oppComposure);
+                if (adj.selfComposure) applyComposureChange(meta, adj.selfComposure);
                 const directive = buildDuelDirective(meta, adj, res);
                 setInjection(directive);
                 commitCache(directive, res.tier);

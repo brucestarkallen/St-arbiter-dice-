@@ -281,6 +281,21 @@ trade drops both fighters at once. Tune frequency with the **Tie window**
 under Outcome feel (0 disables; 0.06 default; higher = more ties); it affects
 only fighting exchanges, never single checks.
 
+## Composure is universal too (v0.14)
+
+Corrected: mental strain is NOT player-only — this is a simulation, and the
+world's minds break like yours. A duel opponent now carries their own
+composure pool that erodes when the player frightens, awes, or demoralizes
+them (a horrifying display, a revealed power, an ally falling) and steadies
+when they rally. A foe whose nerve breaks fights measurably worse — their
+frayed composure penalizes them just as yours penalizes you — and the HUD
+status describes them as rattled or breaking so you see it in the prose. The
+referee reads fear on BOTH sides each exchange (opp_composure / self_composure).
+So revealing your true power can rout a lesser enemy before a blow lands, and a
+terrifying monster can unnerve you in the same fight. (Ambient, non-combatant
+crowds are still narrated rather than individually simulated — but anyone you
+actually fight has a real, breakable nerve.)
+
 ## Who each feature covers (v0.13.1)
 
 - **Conditions & gear** apply to EVERYONE — the player, allies, enemies, and
