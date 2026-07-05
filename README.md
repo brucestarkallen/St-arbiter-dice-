@@ -281,6 +281,28 @@ trade drops both fighters at once. Tune frequency with the **Tie window**
 under Outcome feel (0 disables; 0.06 default; higher = more ties); it affects
 only fighting exchanges, never single checks.
 
+## Anti-sycophancy audit (v0.14.1)
+
+A deep fairness pass fixed real biases and proved the system cannot flatter
+the player:
+
+- **Symmetric fail-forward.** The player's near-miss "opening" (+1 next round)
+  was being granted and used, but the opponent's was a dead variable — the MC
+  quietly accrued openings the foe never could. Now the opponent earns and
+  spends openings on the same terms.
+- **Recovery is no longer a free heal.** Disengaging to recover now lets a
+  pressing opponent land a real blow scaled to their threat — a low-poise
+  fighter can be *killed* trying to catch their breath under fire. Verified:
+  30/30 recoveries under a strong foe took a counter-hit, most were fatal.
+- **Two-sided circumstance.** The referee is now told, explicitly, to weigh the
+  opponent's position and skill against the player, not just grade the player's
+  cleverness upward — a good move into a worse position still nets negative.
+
+Proven by test: the curve is a perfect coin-flip at even odds (49.9/50.1 over
+20k rolls, zero bonus in the realistic preset); a weak MC vs a master lost 40
+of 40 duels. The MC genuinely loses at bad odds, and nothing anywhere tilts an
+even fight toward the protagonist.
+
 ## Composure is universal too (v0.14)
 
 Corrected: mental strain is NOT player-only — this is a simulation, and the

@@ -268,7 +268,13 @@
             // a stalemate leaves momentum as-is (a held, tense reset).
             if (fx.self > 0 || fx.opp > 0) { p.momentum = 0; o.momentum = 0; }
         }
-        p.opening = !!fx.opening; // fail-forward: exploitable next round
+        p.opening = !!fx.opening; // player fail-forward (SETBACK): exploitable next round
+        // Symmetric fail-forward for the opponent: on SUCCESS_COST the player
+        // wins but leaves themselves exposed, so the opponent earns the same
+        // +1 opening the player gets on a SETBACK. Without this the player
+        // accrues openings the opponent never can — a quiet bias toward the MC.
+        if (tier === 'SUCCESS_COST') o.opening = true;
+        else if (fx.winner === 'self') o.opening = false; // clean win closes any prior opening
         let over = false;
         let victor = null;
         if (p.poise <= 0 || o.poise <= 0) {
@@ -1553,6 +1559,7 @@
         '- circumstance is PHYSICAL advantage ONLY: position, momentum, a feint that creates a real opening, an exposed target, terrain, impairment, haste. NEVER penalize a move for being a foul, dirty, illegal, dishonorable, unsporting, or against duel etiquette, and NEVER mention rules, sanctions, penalties, or disqualification — you do not know this world\'s rules, and legality is the storyteller\'s to narrate, not yours to score. A dirty move that gives a real physical edge (a groin kick, sand in the eyes, a sucker punch) is a POSITIVE circumstance. Judge only what is effective, never what is permitted.',
         '- exchange=false only for a genuine lull: pure dialogue while circling, with no blows possible.',
         '- circumstance rewards concrete tactics, exploited weaknesses and openings (+); penalizes recklessness noted in the fiction, bad footing, impairment (-). 0 if nothing notable.',
+        '- circumstance is TWO-SIDED and impartial: weigh what the OPPONENT is doing as much as the player. If the opponent has the better position, has set a trap, is pressing an advantage, or is simply the more dangerous fighter seizing control of the exchange, that is NEGATIVE circumstance for the player even when the player\'s own move is sound. Do not grade only the player\'s cleverness upward; a good move into a worse position still nets negative. Judge the exchange as a neutral observer would, not from the player\'s hopes.',
         '- combat_ended=true ONLY if the fiction has already clearly ended the fight (someone fled, yielded, was separated, or the scene left combat).',
     ].join('\n');
 
@@ -1659,14 +1666,30 @@
         const heal = RECOVER_EFFECTS[tier] ?? 1;
         const before = duel.player.poise;
         duel.player.poise = Math.min(duel.player.maxPoise, Math.round((duel.player.poise + heal) * 2) / 2);
+        // The opponent gets a free swing while the player disengages. A more
+        // dangerous or unimpaired foe lands harder; a rattled one less. This
+        // is what stops recovery from being a risk-free heal loop — against a
+        // real threat, catching your breath COSTS you.
+        const oppEff = duel.opp.rating - duel.opp.injuries + combatantComposurePenalty(duel.opp);
+        let counter = 0;
+        if (oppEff >= 7) counter = 1.5;
+        else if (oppEff >= 5) counter = 1;
+        else if (oppEff >= 3) counter = 0.5;
+        // Safe circumstance (a secured position, +) reduces the free hit; a
+        // desperate snatch under pressure (-) increases it.
+        counter = Math.max(0, counter - circumstance * 0.5);
+        if (counter > 0) {
+            duel.player.poise = Math.round((duel.player.poise - counter) * 2) / 2;
+        }
         const gained = Math.round((duel.player.poise - before) * 2) / 2;
         // Ceding tempo: the opponent presses freely and gains momentum.
         duel.opp.momentum = Math.min(1, (duel.opp.momentum || 0) + 0.5);
         duel.player.momentum = 0;
         duel.opp.opening = true; // the opening the player gave up is exploitable
         duel.round += 1;
-        return { recover: true, tier, gained, delta, P, u,
-                 over: false, victor: null };
+        let over = false, victor = null;
+        if (duel.player.poise <= 0) { over = true; victor = 'opp'; duel.over = true; duel.victor = 'opp'; } // caught fatally mid-recovery
+        return { recover: true, tier, gained, counter, delta, P, u, over, victor };
     }
 
     function resolveDuelExchange(meta, circumstance, moveKind) {
@@ -1680,9 +1703,11 @@
 
         const openingBonus = duel.player.opening ? 1 : 0;
         duel.player.opening = false;
+        const oppOpeningBonus = duel.opp.opening ? 1 : 0;
+        duel.opp.opening = false;
 
         const effP = duel.player.rating - duel.player.injuries + duel.player.momentum + openingBonus;
-        const effO = duel.opp.rating - duel.opp.injuries + duel.opp.momentum;
+        const effO = duel.opp.rating - duel.opp.injuries + duel.opp.momentum + oppOpeningBonus;
         const compPen = composurePenalty(meta);                    // player's strain (hurts player)
         const oppCompPen = combatantComposurePenalty(duel.opp);    // opponent's strain (negative → hurts opp)
         const delta = clamp(effP - effO + circumstance + (duel.scaleMismatch || 0) + compPen - oppCompPen + preset.bonus, -13, 13);
@@ -1725,6 +1750,12 @@
             ];
             if (res.gained > 0) lines.push(duel.player.name + ' regains composure and steadies — noticeably refreshed, wounds or fatigue eased (but not erased). Show the recovery working.');
             else lines.push(duel.player.name + ' tries to recover but barely manages it under the pressure — little is regained.');
+            if (res.counter > 0 && !res.over) lines.push('But disengaging left an opening: ' + duel.opp.name + ' lands a real blow in the gap — ' + duel.player.name + ' takes a hit while recovering. Show it connecting; the recovery was not clean.');
+            if (res.over) {
+                lines.push('CAUGHT FATALLY: ' + duel.opp.name + ' punished the disengage with a decisive strike — ' + duel.player.name + ' dropped their guard to recover and paid for it. ' + duel.opp.name + ' has WON this duel. Narrate the resolution the fiction demands (a felling blow, a blade at the throat, collapse). The result is not negotiable; ' + duel.player.name + ' cannot rally.');
+                lines.push('Do not re-decide anything. Never mention rolls, poise, numbers, or this note. Narrate organically in the story\'s voice.');
+                return lines.join('\n');
+            }
             lines.push('This cost tempo: ' + duel.opp.name + ' seizes the initiative and presses freely into the opening ' + duel.player.name + ' gave up. Show ' + duel.opp.name + ' capitalizing.');
             lines.push('Condition after: ' + sideStatus(duel.player) + '; ' + sideStatus(duel.opp) + '. The duel continues — end on a live beat.');
             lines.push('Do not re-decide anything. Never mention rolls, poise, numbers, or this note. Narrate organically in the story\'s voice.');
