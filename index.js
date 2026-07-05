@@ -22,7 +22,7 @@
     'use strict';
 
     const MODULE = 'arbiter';
-    const VERSION = '0.8.1';
+    const VERSION = '0.8.2';
     const INJECT_KEY = 'ARBITER_OUTCOME';
     const LOG = '[Arbiter]';
 
@@ -38,10 +38,21 @@
     }
 
     function clearActivity() {
-        activity.label = '';
-        activity.busy = false;
-        activity.startedAt = 0;
-        try { renderActivity(); } catch (e) { /* not ready */ }
+        // Keep the indicator up for a minimum perceptible time so a fast
+        // operation (or a fast failure) doesn't flash-and-vanish invisibly.
+        const MIN_VISIBLE = 900;
+        const elapsed = activity.startedAt ? Date.now() - activity.startedAt : MIN_VISIBLE;
+        const finish = () => {
+            activity.label = '';
+            activity.busy = false;
+            activity.startedAt = 0;
+            try { renderActivity(); } catch (e) { /* not ready */ }
+        };
+        if (elapsed < MIN_VISIBLE && activity.busy) {
+            setTimeout(finish, MIN_VISIBLE - elapsed);
+        } else {
+            finish();
+        }
     }
 
     function activityCanceled() {
@@ -469,6 +480,23 @@
             const list = c.extensionSettings?.connectionManager?.profiles;
             return Array.isArray(list) ? list : [];
         } catch (e) { return []; }
+    }
+
+    /** True if the seeder/adjudicator has some route it can call: either a
+     *  chosen Connection Manager profile, or a usable raw generate fallback
+     *  on a currently-connected main API. */
+    function hasWorkingRoute() {
+        try {
+            const c = ctx();
+            const s = getSettings();
+            if (s.profileId && c.ConnectionManagerRequestService?.sendRequest) return true;
+            // Raw fallback: only counts if a main API looks connected.
+            if (typeof c.generateRaw === 'function') {
+                const online = c.onlineStatus;
+                if (online === undefined || (online && online !== 'no_connection')) return true;
+            }
+            return false;
+        } catch (e) { return true; } // never block on uncertainty
     }
 
     /**
@@ -1041,6 +1069,7 @@
         if (!meta) { if (!o.auto) toast('warning', 'No chat open.'); return; }
         const chat = c.chat || [];
         if (!chat.length) { if (!o.auto) toast('warning', 'Chat is empty.'); return; }
+        if (!hasWorkingRoute()) { if (!o.auto) toast('error', 'No AI connection for seeding. Set an Adjudicator profile first.', 'Arbiter'); clearActivity(); return; }
         setActivity(o.auto ? 'Arbiter: auto-seeding threads' : 'Arbiter: finding background currents');
         if (!o.auto) toast('info', 'Reading the story for background currents…', 'Arbiter threads');
         const parts = [];
@@ -1735,6 +1764,12 @@
         if (!meta) { if (!o.auto) toast('warning', 'No chat open.'); return; }
         const chat = c.chat || [];
         if (!chat.length) { if (!o.auto) toast('warning', 'Chat is empty.'); return; }
+        if (!hasWorkingRoute()) {
+            if (!o.auto) toast('error', 'No AI connection for seeding. Pick an Adjudicator profile in Arbiter → Core (or connect an API), then seed again.', 'Arbiter');
+            dlog('seed skipped: no working LLM route');
+            clearActivity();
+            return;
+        }
 
         setActivity(o.auto ? 'Arbiter: auto-seeding cast' : 'Arbiter: reading story, building sheet');
         if (!o.auto) toast('info', 'Reading the story and building the sheet…', 'Arbiter seed');
@@ -2023,7 +2058,10 @@
         const p = getProfiles().find(x => x.id === s.profileId);
         const chips = [];
         chips.push('<span class="arb_chip ' + (s.enabled ? 'ok' : 'bad') + '">' + (s.enabled ? 'ACTIVE' : 'DISABLED') + '</span>');
-        chips.push('<span class="arb_chip ' + (p ? 'ok' : 'warn') + '" title="Adjudicator route">' + escHtml(p ? p.name : 'no profile · raw fallback') + '</span>');
+        const routed = hasWorkingRoute();
+        if (p) chips.push('<span class="arb_chip ok" title="Adjudicator route">' + escHtml(p.name) + '</span>');
+        else if (routed) chips.push('<span class="arb_chip warn" title="Using the main API as fallback">raw fallback</span>');
+        else chips.push('<span class="arb_chip bad" title="No adjudicator profile and no connected API — seeding and checks cannot run">NO CONNECTION</span>');
         chips.push('<span class="arb_chip">' + escHtml(s.mode + ' · ' + s.preset) + '</span>');
         if (meta) {
             const actors = Object.keys(meta.sheet.actors || {}).length;
