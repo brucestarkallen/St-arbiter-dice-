@@ -281,6 +281,27 @@ trade drops both fighters at once. Tune frequency with the **Tie window**
 under Outcome feel (0 disables; 0.06 default; higher = more ties); it affects
 only fighting exchanges, never single checks.
 
+## Gear & mental strain (v0.13)
+
+Two real-life dimensions beyond raw skill and body:
+
+**Gear** — a signature weapon, armor, or tool is a persistent modifier tied to
+ONE domain: a masterwork blade gives +2 to melee in every fight (not to
+stealth), an enchanted bow +2 to ranged. Established when the fiction gives it
+("you claim the legendary sword Frostfang"), removed when lost or broken, and
+flagged as gear so healing never strips it. General afflictions (curse,
+exhaustion) still apply to everything; gear applies only to its domain.
+
+**Composure** — a mental-strain track modeling real stress psychology. It runs
+from steady to shattered and erodes when the player faces horror, terror,
+gruesome death, or dread; it recovers with safety and rest. Mild strain is
+harmless (people function while nervous), but as it deepens past halfway it
+penalizes actions requiring focus and steady nerves — a terrified character
+fights and thinks worse — without ever being a "you go insane" game-over. The
+referee reads the fiction's emotional weight each turn; toggle it off, or set
+the pool size, in settings. Perfect for Delta Green / Call of Cthulhu-style
+horror where fear is as dangerous as any blade.
+
 ## Any creature, any scale (v0.12.2)
 
 Ratings aren't human-only. The referee rates ANY combatant — person, dragon,

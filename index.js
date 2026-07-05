@@ -359,7 +359,7 @@
         PRESETS, EXCHANGE_EFFECTS, applyExchangeEffects, poiseWord,
         rollEventTick, rollTier, tickThread, ENGINE_DEFAULTS,
         EVENT_TYPES, ENCOUNTER_TYPES, extractJsonCandidates, collectMemoryBlock,
-        STRATAGEM_EFFECTS, tieCheck, ratingFor,
+        STRATAGEM_EFFECTS, tieCheck, ratingFor, composurePenalty, applyComposureChange,
     };
 
     /* ------------------------------------------------------------------ */
@@ -418,6 +418,8 @@
         encounterTypes: '',       // comma list overriding built-in encounter hooks ('' = defaults)
         duelPoise: 5,             // default poise pool (sheet "poise" per actor overrides)
         tieBand: 0.06,            // exchange tie window (0 disables; ~even rolls become TRADE/STALEMATE)
+        composure: true,          // model mental strain (fear/horror/trauma erode focus)
+        composureMax: 6,          // starting mental-strain pool (like poise, for the mind)
         showHud: true,
         showActivity: true,      // floating 'Arbiter is working…' indicator
         debug: false,
@@ -679,7 +681,8 @@
         ' "duel_start": null | "<opponent name — set this whenever the action opens physical combat against ONE named person: a strike, a draw, a lunge, an attack with a weapon or power, even if you expect it to be quick or one-sided. When in doubt between a single check and a duel for an attack on a person, prefer the duel.>",',
         ' "opponent_rating": null | <integer 0-10 — set ONLY when you also set duel_start or battle_start AND the opponent is NOT already in the sheet. Estimate combat capability from the scene and description. Scale (by effective threat, NOT species): 2 untrained, 4 trained, 5 competent professional, 6 veteran, 7 elite, 8 master, 9 legendary, 10 apex. This applies to ANY combatant — a person, beast, dragon, alien, machine, or monster — rated by how dangerous it actually is: a feral dog 3, a trained warhound 5, a dire beast 7, an ancient dragon or apex monster 9-10. When a creature is so far beyond human scale that raw skill barely matters, rate it 10 AND set scale_mismatch below.>",',
         ' "scale_mismatch": null | <integer -4..4 — set ONLY in combat where the two sides are CATEGORICALLY mismatched in size, mass, or power (a human vs a dragon, a footsoldier vs a war-mech, a child vs a bear). This is an ADDITIONAL swing on top of ratings, representing that skill alone cannot close the gap. From the PLAYER\'s perspective: strongly negative when the player is hopelessly outmatched by something vast (a normal human attacking a dragon head-on: -3 or -4), strongly positive when the player is the vast one crushing something tiny. 0 or null when both sides are roughly the same scale (human vs human, dragon vs dragon), even if their skill differs. An equalizer in the fiction — a dragon-slaying spear, a mech of their own, a weak point exposed — reduces the magnitude.>",',
-        ' "condition_change": null | {"who": "<player or a named character>", "add": "<short lasting condition just established in the fiction, e.g. broken left arm, poisoned, exhausted, blinded in one eye, cursed — or null>", "remove": "<a prior lasting condition the fiction just healed/resolved, or null>", "mod": <integer -4..2, the effect on their capability while it lasts; a handicap is negative, e.g. broken arm -2, mild poison -1; only used with add>}. Set this the moment the story establishes or heals a PERSISTENT condition (one that lasts beyond this scene), NOT for fleeting in-fight poise damage. Leave null when nothing persistent changed.',
+        ' "composure_change": null | <integer -3..3 — the mental toll or relief of THIS moment on the player. Negative when the player faces horror, terror, gruesome death, existential dread, betrayal, or crushing loss (a mild shock -1, witnessing atrocity -2, mind-shattering cosmic horror -3). Positive when the player finds safety, rest, reassurance, or a grounding victory (+1 to +2). 0 for ordinary moments. This is the FICTION\'s emotional weight, independent of any dice outcome. Judge from what happens to the player, not whether an action succeeds.>",',
+        ' "condition_change": null | {"who": "<player or a named character>", "add": "<short lasting condition or piece of gear just established, e.g. broken left arm, poisoned, exhausted, OR a signature weapon/armor like masterwork blade, enchanted plate — or null>", "remove": "<a prior condition/gear the fiction just resolved (healed, lost, broken), or null>", "mod": <integer -4..3, effect while it lasts; afflictions negative (broken arm -2), good gear positive (fine sword +1, legendary weapon +2 or +3)>, "domain": "<optional: the ONE domain this affects, e.g. melee for a sword, ranged for a bow; omit for whole-body effects like a curse or exhaustion>", "gear": true|false}. Set the moment the story establishes/removes something PERSISTENT (lasts beyond this scene). Gear (weapons, armor, tools) sets gear:true so it is not stripped by healing. Leave null when nothing persistent changed.',
         ' "battle_start": null | {"allies": ["<name>", ...], "enemies": ["<name or generic squad like Guard x3>", ...]} — set this when combat begins against MULTIPLE opponents at once, OR when the player attacks/affects a GROUP (e.g. "sweep through the guards", "hit all of them"). If the opponents are unnamed, invent a fitting generic squad with a count (e.g. "Guard x3", "Bandit x4"). List allies EXCLUDING the player. This is for skirmish-scale group combat (a handful per side), NOT army-scale warfare.},',
         ' "war_start": null | {"allies": ["<formation, e.g. Left Flank, 3rd Cavalry, Zero Squadron>", ...], "enemies": ["<enemy formation>", ...], "enemy_commander": "<name or null>"} — set when the player takes COMMAND of army-scale combat: leading forces, issuing orders to units/formations/squadrons. Invent sensible formation names from the fiction if unnamed (2-5 per side).,',
         ' "army_scale": null | "<short name for the larger conflict — set ONLY when the player is caught in mass warfare WITHOUT commanding it (a soldier or bystander in the melee); if they command, use war_start instead>"}',
@@ -767,6 +770,7 @@
             war_start: normalizeWarStart(obj.war_start),
             opponent_rating: (obj.opponent_rating === null || obj.opponent_rating === undefined) ? null : clamp(Math.round(Number(obj.opponent_rating)), 0, 10),
             condition_change: normalizeConditionChange(obj.condition_change),
+            composure_change: (obj.composure_change === null || obj.composure_change === undefined) ? 0 : clamp(Math.round(Number(obj.composure_change)), -3, 3),
             army_scale: (typeof obj.army_scale === 'string' && obj.army_scale.trim()) ? obj.army_scale.trim().slice(0, 80) : null,
         };
     }
@@ -778,8 +782,10 @@
         const add = (typeof cc.add === 'string' && cc.add.trim()) ? cc.add.trim().slice(0, 80) : null;
         const remove = (typeof cc.remove === 'string' && cc.remove.trim()) ? cc.remove.trim().slice(0, 80) : null;
         if (!add && !remove) return null;
-        const mod = clamp(Math.round(Number(cc.mod) || (add ? -1 : 0)), -4, 2);
-        return { who, add, remove, mod };
+        const gear = cc.gear === true;
+        const mod = clamp(Math.round(Number(cc.mod) || (add ? (gear ? 1 : -1) : 0)), -4, 3);
+        const domain = (typeof cc.domain === 'string' && cc.domain.trim()) ? cc.domain.trim().toLowerCase().slice(0, 24) : null;
+        return { who, add, remove, mod, domain, gear };
     }
 
     /** Apply a persistent condition change to the sheet, resolving "player"
@@ -806,9 +812,15 @@
         if (cc.add) {
             const al = cc.add.toLowerCase();
             if (!entry.conditions.some(c => String(c.name || '').toLowerCase() === al)) {
-                entry.conditions.push({ name: cc.add, mod: cc.mod });
-                if (entry.conditions.length > 6) entry.conditions.shift();
-                notes.push(name + ' now suffers ' + cc.add + ' (' + (cc.mod >= 0 ? '+' : '') + cc.mod + ' while it lasts)');
+                const item = { name: cc.add, mod: cc.mod };
+                if (cc.domain) item.domain = cc.domain;
+                if (cc.gear) item.gear = true;
+                entry.conditions.push(item);
+                if (entry.conditions.length > 8) entry.conditions.shift();
+                const scope = cc.domain ? ' to ' + cc.domain : '';
+                notes.push(cc.gear
+                    ? name + ' gains ' + cc.add + ' (' + (cc.mod >= 0 ? '+' : '') + cc.mod + scope + ')'
+                    : name + ' now suffers ' + cc.add + ' (' + (cc.mod >= 0 ? '+' : '') + cc.mod + scope + ' while it lasts)');
             }
         }
         if (!entry.conditions.length) delete entry.conditions;
@@ -1665,7 +1677,8 @@
 
         const effP = duel.player.rating - duel.player.injuries + duel.player.momentum + openingBonus;
         const effO = duel.opp.rating - duel.opp.injuries + duel.opp.momentum;
-        const delta = clamp(effP - effO + circumstance + (duel.scaleMismatch || 0) + preset.bonus, -13, 13);
+        const compPen = composurePenalty(meta);
+        const delta = clamp(effP - effO + circumstance + (duel.scaleMismatch || 0) + compPen + preset.bonus, -13, 13);
         const P = probFromDelta(delta);
         const u = rngFloat();
         const tier = tieCheck(sliceOutcome(P, u, preset.mods), P, u, getSettings().tieBand);
@@ -1767,14 +1780,61 @@
      *  Negative numbers handicap; positive could represent a persistent buff.
      *  Stored on the sheet entry as conditions: [{name, mod}]. Clamped so no
      *  single character is dragged below the floor by stacking. */
-    function conditionMod(actorEntry) {
+    /** Sum of an actor's persistent modifiers for a given domain: general
+     *  conditions (broken arm, curse, exhaustion) apply to everything; a
+     *  modifier tagged with a domain (a signature blade → melee) applies only
+     *  to that domain. Gear and afflictions share this list; gear just carries
+     *  gear:true for display and so healing/curing doesn't strip equipment. */
+    /** Player mental strain. Composure runs from 0 (shattered) to max (steady),
+     *  stored per-chat. Real acute stress leaves mild strain harmless but
+     *  degrades focus, judgement and fine control as it deepens — so the
+     *  penalty is 0 until composure drops below ~half, then grows. It never
+     *  hard-blocks action (people still function while terrified); it makes
+     *  focus-dependent actions harder and recovers with safety and rest. */
+    function getComposure(meta) {
+        const s = getSettings();
+        const max = clamp(s.composureMax, 3, 12);
+        if (typeof meta.composure !== 'number') meta.composure = max;
+        meta.composure = clamp(meta.composure, 0, max);
+        return { cur: meta.composure, max };
+    }
+
+    function composurePenalty(meta) {
+        const s = getSettings();
+        if (!s.composure) return 0;
+        const { cur, max } = getComposure(meta);
+        const half = max / 2;
+        if (cur >= half) return 0;                 // steady enough — no impairment
+        // Below half, penalty scales from 0 toward -3 as composure nears zero.
+        const frac = (half - cur) / half;          // 0 at half, 1 at zero
+        return -Math.round(frac * 3);
+    }
+
+    function applyComposureChange(meta, delta) {
+        const s = getSettings();
+        if (!s.composure || !delta) return null;
+        const max = clamp(s.composureMax, 3, 12);
+        if (typeof meta.composure !== 'number') meta.composure = max;
+        const before = meta.composure;
+        meta.composure = clamp(meta.composure + delta, 0, max);
+        const now = meta.composure;
+        if (now === before) return null;
+        // Narration-relevant thresholds so the storyteller can show the strain.
+        const state = (v) => v >= max * 0.75 ? 'steady' : v >= max * 0.5 ? 'shaken' : v >= max * 0.25 ? 'badly rattled' : 'near breaking';
+        return { before, now, max, worsened: now < before, state: state(now) };
+    }
+
+    function conditionMod(actorEntry, domain) {
         if (!actorEntry || !Array.isArray(actorEntry.conditions)) return 0;
+        const d = String(domain || '').toLowerCase();
         let sum = 0;
         for (const c of actorEntry.conditions) {
             const m = Number(c && c.mod);
-            if (Number.isFinite(m)) sum += m;
+            if (!Number.isFinite(m)) continue;
+            const cd = c.domain ? String(c.domain).toLowerCase() : null;
+            if (!cd || cd === d) sum += m; // untagged = applies to all; tagged = only its domain
         }
-        return clamp(sum, -6, 4);
+        return clamp(sum, -6, 5);
     }
 
     function ratingFor(actorEntry, domain, fallback) {
@@ -1787,8 +1847,8 @@
             if (key.toLowerCase() === d) { base = clamp(domains[key], 0, 10); found = true; break; }
         }
         if (!found && actorEntry.default !== undefined) base = clamp(actorEntry.default, 0, 10);
-        // Persistent conditions modify the effective rating, floored at 0.
-        return clamp(base + conditionMod(actorEntry), 0, 10);
+        // Persistent modifiers (afflictions + gear) adjust the effective rating.
+        return clamp(base + conditionMod(actorEntry, domain), 0, 10);
     }
 
     /** Turn a normalized adjudication into a resolved outcome. Pure-ish: RNG inside. */
@@ -1815,7 +1875,9 @@
         }
 
         const preset = getPreset();
-        const delta = clamp(aR - oR + adj.circumstance + (adj.scale_mismatch || 0) + preset.bonus, -13, 13);
+        const isPlayerActor = (adj.actor || '').toLowerCase() === (ctx().name1 || 'player').toLowerCase();
+        const compPen = isPlayerActor ? composurePenalty(meta) : 0;
+        const delta = clamp(aR - oR + adj.circumstance + (adj.scale_mismatch || 0) + compPen + preset.bonus, -13, 13);
         const P = probFromDelta(delta);
         const u = rngFloat();
         const tier = sliceOutcome(P, u, preset.mods);
@@ -2139,6 +2201,17 @@
                 conditionNote = applyConditionChange(meta, adj.condition_change);
                 if (conditionNote) { saveMeta(); renderSheet(); dlog('condition:', conditionNote); }
             }
+            // Mental strain from the fiction's emotional weight.
+            let composureNote = null;
+            if (adj.composure_change) {
+                const cr = applyComposureChange(meta, adj.composure_change);
+                if (cr) {
+                    composureNote = cr.worsened
+                        ? 'The strain shows — ' + (ctx().name1 || 'the player') + ' is ' + cr.state + '.'
+                        : (ctx().name1 || 'the player') + ' steadies, now ' + cr.state + '.';
+                    saveMeta(); renderHud(); dlog('composure', cr.before, '→', cr.now, '(' + cr.state + ')');
+                }
+            }
 
             if (inWar) {
                 if (adj.combat_ended) {
@@ -2309,7 +2382,9 @@
             }
 
             const res = resolveAdj(adj, meta);
-            const directive = buildDirective(adj, res) + (conditionNote ? '\n[ARBITER — lasting condition] ' + conditionNote + '. Reflect this in the prose; it persists until resolved.' : '');
+            const directive = buildDirective(adj, res)
+                + (conditionNote ? '\n[ARBITER — lasting condition] ' + conditionNote + '. Reflect this in the prose; it persists until resolved.' : '')
+                + (composureNote ? '\n[ARBITER — composure] ' + composureNote + ' Let it color their focus and demeanor; do not mention meters.' : '');
             setInjection(directive);
 
             commitCache(directive, res.tier);
