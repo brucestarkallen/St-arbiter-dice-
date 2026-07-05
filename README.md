@@ -228,6 +228,15 @@ Deliberate boundary: Arbiter owns the **dice** of the background world.
 Character *state* (personalities, relationships, who knows what) belongs to
 your character-ledger tooling — one source of truth each.
 
+## Activity indicator (v0.8)
+
+Whenever Arbiter is doing background work — seeding the sheet, building
+threads, or resolving a check/exchange — a small floating pill appears
+(bottom-right) with a spinner, the current task, elapsed seconds, and a ✕ to
+cancel. Cancel aborts the in-flight model call and the operation backs out
+cleanly (no partial writes). Toggle it off under Combat → Activity bar. So
+you always know whether a seed or check is running vs. stalled.
+
 ## Panel layout (v0.7)
 
 The settings drawer is grouped into collapsible sections — **Core** (switch,

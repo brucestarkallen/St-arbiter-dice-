@@ -22,9 +22,31 @@
     'use strict';
 
     const MODULE = 'arbiter';
-    const VERSION = '0.7.4';
+    const VERSION = '0.8.0';
     const INJECT_KEY = 'ARBITER_OUTCOME';
     const LOG = '[Arbiter]';
+
+    // Live activity state, surfaced as a floating indicator with a cancel.
+    const activity = { label: '', busy: false, canceled: false, startedAt: 0 };
+
+    function setActivity(label) {
+        activity.label = label || '';
+        activity.busy = !!label;
+        activity.canceled = false;
+        activity.startedAt = label ? Date.now() : 0;
+        try { renderActivity(); } catch (e) { /* not ready */ }
+    }
+
+    function clearActivity() {
+        activity.label = '';
+        activity.busy = false;
+        activity.startedAt = 0;
+        try { renderActivity(); } catch (e) { /* not ready */ }
+    }
+
+    function activityCanceled() {
+        return activity.canceled;
+    }
 
     /* ------------------------------------------------------------------ */
     /* Small utils                                                        */
@@ -331,6 +353,7 @@
         encounterTypes: '',       // comma list overriding built-in encounter hooks ('' = defaults)
         duelPoise: 5,             // default poise pool (sheet "poise" per actor overrides)
         showHud: true,
+        showActivity: true,      // floating 'Arbiter is working…' indicator
         debug: false,
     };
 
@@ -458,6 +481,9 @@
         const started = Date.now();
         const controller = new AbortController();
         const timer = setTimeout(() => { try { controller.abort(); } catch (e) { } }, budgetMs);
+        // Poll the activity cancel flag so the floating ✕ aborts this request.
+        const cancelPoll = setInterval(() => { if (activityCanceled()) { try { controller.abort(); } catch (e) { } } }, 150);
+        if (cancelPoll && typeof cancelPoll.unref === 'function') cancelPoll.unref();
 
         const extract = (res) => {
             if (typeof res === 'string') return res.trim();
@@ -513,6 +539,7 @@
             return '';
         } finally {
             clearTimeout(timer);
+            clearInterval(cancelPoll);
         }
     }
 
@@ -1014,6 +1041,7 @@
         if (!meta) { if (!o.auto) toast('warning', 'No chat open.'); return; }
         const chat = c.chat || [];
         if (!chat.length) { if (!o.auto) toast('warning', 'Chat is empty.'); return; }
+        setActivity(o.auto ? 'Arbiter: auto-seeding threads' : 'Arbiter: finding background currents');
         if (!o.auto) toast('info', 'Reading the story for background currents…', 'Arbiter threads');
         const parts = [];
         let chars = 0;
@@ -1029,6 +1057,8 @@
         const mem = collectMemoryBlock(clamp(ts.seedMemoryK, 2, 500) * 1000);
         const existing = meta.threads.map(t => t.name).join(', ') || 'none';
         const out = await callLLM(THREAD_SEED_SYSTEM, (mem.block ? mem.block + '\n\n' : '') + '<existing_threads>' + existing + '</existing_threads>\n\n<transcript>\n' + parts.reverse().join('\n') + '\n</transcript>', 700, 45000);
+        clearActivity();
+        if (activityCanceled()) { if (!o.auto) toast('warning', 'Thread seed canceled.'); return; }
         let obj = null;
         for (const cand of extractJsonCandidates(out, 5)) {
             if (cand && Array.isArray(cand.threads)) { obj = cand; break; }
@@ -1536,6 +1566,7 @@
             }
 
             // ── ADJUDICATED MODE ──
+            setActivity(inDuel ? 'Arbiter: resolving exchange' : (inBattle ? 'Arbiter: resolving battle round' : 'Arbiter: checking outcome'));
             const sysPrompt = inDuel ? DUEL_SYSTEM : (inBattle ? BATTLE_SYSTEM : ADJ_SYSTEM);
             let userPrompt = buildAdjUserPrompt(chat, lastUser, meta);
             if (inBattle) userPrompt += battleContext(meta);
@@ -1559,6 +1590,7 @@
                 adj = normalize(rawOut);
             }
 
+            clearActivity();
             if (!adj) {
                 dlog('adjudicator unavailable or invalid — turn proceeds unmodified');
                 return;
@@ -1667,6 +1699,7 @@
             renderLog();
         } finally {
             inFlight = false;
+            clearActivity();
         }
     }
 
@@ -1703,6 +1736,7 @@
         const chat = c.chat || [];
         if (!chat.length) { if (!o.auto) toast('warning', 'Chat is empty.'); return; }
 
+        setActivity(o.auto ? 'Arbiter: auto-seeding cast' : 'Arbiter: reading story, building sheet');
         if (!o.auto) toast('info', 'Reading the story and building the sheet…', 'Arbiter seed');
         const parts = [];
         let chars = 0;
@@ -1726,6 +1760,8 @@
             parts.reverse().join('\n') + '\n</transcript>';
 
         const out = await callLLM(SEED_SYSTEM, userPrompt, clamp(s.seedOutTokens, 400, 8000), 60000);
+        clearActivity();
+        if (activityCanceled()) { if (!o.auto) toast('warning', 'Seed canceled.'); return; }
         let obj = null;
         for (const cand of extractJsonCandidates(out, 5)) {
             if (cand && typeof cand.actors === 'object' && cand.actors !== null) { obj = cand; break; }
@@ -1882,6 +1918,7 @@
           <label class="checkbox_label"><input id="arb_autoduel" type="checkbox"><span>Auto duel</span></label>
           <label class="checkbox_label"><input id="arb_autobattle" type="checkbox"><span>Auto battle</span></label>
           <label class="checkbox_label"><input id="arb_showhud" type="checkbox"><span>HUD</span></label>
+          <label class="checkbox_label"><input id="arb_showact" type="checkbox"><span>Activity bar</span></label>
           <label>Poise</label><input id="arb_poise" type="number" min="1" max="20" class="text_pole arb_num">
         </div>
         <div class="arb_hint">The referee opens duels/battles when combat clearly starts and closes them when the fiction ends one. HUD: floating round + poise bars (✕ ends the fight). Poise: 5 suits people, 6-8 mecha Frames; a "poise" key per actor in the sheet overrides.</div>
@@ -1928,7 +1965,7 @@
           <div id="arb_btn_skip" class="menu_button">Skip next</div>
           <div id="arb_btn_seed" class="menu_button">Seed sheet</div>
         </div>
-        <div class="arb_hint">One-shot flags for your NEXT message (same as /arb, /arbskip) · manual full sheet update (same as /arbseed).</div>
+        <div class="arb_hint">Force next: make Arbiter roll a check on your NEXT message even if the gate would not (same as /arb). Skip next: skip the check on your NEXT message (same as /arbskip). Both fire once, then reset. Seed sheet: full manual re-read of memory + story (same as /arbseed).</div>
         <div class="arb_buttons">
           <div id="arb_memsources" class="menu_button">Memory sources</div>
           <div id="arb_reset_settings" class="menu_button">Reset settings</div>
@@ -2064,6 +2101,32 @@
 
     let _lastHudHtml = '';
 
+    function renderActivity() {
+        try {
+            if (typeof document === 'undefined' || !document.body || !document.createElement) return;
+            let el = document.getElementById('arb_activity');
+            if (!activity.busy || !getSettings().showActivity) { if (el) el.remove(); return; }
+            if (!el) {
+                el = document.createElement('div');
+                el.id = 'arb_activity';
+                document.body.appendChild(el);
+            }
+            const secs = activity.startedAt ? Math.floor((Date.now() - activity.startedAt) / 1000) : 0;
+            el.innerHTML = '<span class="arb_act_spin"></span>' +
+                '<span class="arb_act_label">' + escHtml(activity.label) + (secs ? ' · ' + secs + 's' : '') + '</span>' +
+                '<span class="arb_act_x" title="Cancel">✕</span>';
+            const x = el.querySelector('.arb_act_x');
+            if (x) {
+                const cancel = (ev) => { if (ev) { ev.preventDefault(); ev.stopPropagation(); } activity.canceled = true; el.querySelector('.arb_act_label').textContent = 'Canceling…'; };
+                x.onclick = cancel; x.ontouchend = cancel;
+            }
+        } catch (e) { /* the indicator must never break anything */ }
+    }
+
+    // Tick the elapsed-seconds display while busy.
+    const _actTimer = setInterval(() => { if (activity.busy) { try { renderActivity(); } catch (e) { } } }, 1000);
+    if (_actTimer && typeof _actTimer.unref === 'function') _actTimer.unref();
+
     function hudDismiss() {
         try {
             const m = getMeta();
@@ -2160,6 +2223,7 @@
         $('#arb_seedmk').val(s.seedMemoryK);
         $('#arb_seedout').val(s.seedOutTokens);
         $('#arb_showhud').prop('checked', !!s.showHud);
+        $('#arb_showact').prop('checked', !!s.showActivity);
         $('#arb_poise').val(s.duelPoise);
         $('#arb_profile').val(s.profileId || '');
         renderStatus();
@@ -2226,6 +2290,7 @@
         $('#arb_preset').val(s.preset).on('change', function () { s.preset = this.value; saveSettings(); renderStatus(); });
         $('#arb_autoduel').prop('checked', !!s.autoDuel).on('change', function () { s.autoDuel = this.checked; saveSettings(); });
         $('#arb_showhud').prop('checked', !!s.showHud).on('change', function () { s.showHud = this.checked; saveSettings(); renderHud(); });
+        $('#arb_showact').prop('checked', !!s.showActivity).on('change', function () { s.showActivity = this.checked; saveSettings(); renderActivity(); });
         $('#arb_poise').val(s.duelPoise).on('input', function () { s.duelPoise = clamp(this.value, 1, 20); saveSettings(); });
         $('#arb_duel_start').on('click', () => {
             const name = String($('#arb_duel_name').val() || '').trim();
