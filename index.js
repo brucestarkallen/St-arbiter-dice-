@@ -676,6 +676,7 @@
         ' "why": "<one short clause justifying circumstance>",',
         ' "stakes": "<what success or failure means here, one short clause>",',
         ' "duel_start": null | "<opponent name — set this whenever the action opens physical combat against ONE named person: a strike, a draw, a lunge, an attack with a weapon or power, even if you expect it to be quick or one-sided. When in doubt between a single check and a duel for an attack on a person, prefer the duel.>",',
+        ' "opponent_rating": null | <integer 0-10 — set ONLY when you also set duel_start or battle_start AND the opponent is NOT already in the sheet. Estimate the opponent combat capability from the recent scene and any description present, on this scale: 2 untrained, 4 trained, 5 competent professional, 6 veteran, 7 elite, 8 master, 9 legendary, 10 apex-of-setting. A described unbeaten S-tier warlord is 9-10; a trembling farmhand is 2. Leave null if the opponent is already in the sheet or you have no basis to estimate.>",',
         ' "battle_start": null | {"allies": ["<name>", ...], "enemies": ["<name or generic squad like Guard x3>", ...]} — set this when combat begins against MULTIPLE opponents at once, OR when the player attacks/affects a GROUP (e.g. "sweep through the guards", "hit all of them"). If the opponents are unnamed, invent a fitting generic squad with a count (e.g. "Guard x3", "Bandit x4"). List allies EXCLUDING the player. This is for skirmish-scale group combat (a handful per side), NOT army-scale warfare.},',
         ' "war_start": null | {"allies": ["<formation, e.g. Left Flank, 3rd Cavalry, Zero Squadron>", ...], "enemies": ["<enemy formation>", ...], "enemy_commander": "<name or null>"} — set when the player takes COMMAND of army-scale combat: leading forces, issuing orders to units/formations/squadrons. Invent sensible formation names from the fiction if unnamed (2-5 per side).,',
         ' "army_scale": null | "<short name for the larger conflict — set ONLY when the player is caught in mass warfare WITHOUT commanding it (a soldier or bystander in the melee); if they command, use war_start instead>"}',
@@ -760,6 +761,7 @@
             duel_start: duelStart,
             battle_start: battleStart,
             war_start: normalizeWarStart(obj.war_start),
+            opponent_rating: (obj.opponent_rating === null || obj.opponent_rating === undefined) ? null : clamp(Math.round(Number(obj.opponent_rating)), 0, 10),
             army_scale: (typeof obj.army_scale === 'string' && obj.army_scale.trim()) ? obj.army_scale.trim().slice(0, 80) : null,
         };
     }
@@ -1517,7 +1519,7 @@
         return clamp(fallbackPoise, 1, 20);
     }
 
-    function startDuel(meta, playerName, oppName, domain) {
+    function startDuel(meta, playerName, oppName, domain, oppEstimate) {
         const s = getSettings();
         const fallback = clamp(s.defaultRating, 0, 10);
         const pEntry = findActor(meta, playerName);
@@ -1525,6 +1527,10 @@
         const d = String(domain || 'melee').toLowerCase();
         const pPoise = poiseFor(pEntry, s.duelPoise);
         const oPoise = poiseFor(oEntry, s.duelPoise);
+        // Opponent rating priority: sheet entry > context estimate > trained fallback.
+        const oppRating = oEntry
+            ? ratingFor(oEntry, d, fallback)
+            : (Number.isFinite(oppEstimate) ? clamp(oppEstimate, 0, 10) : clamp(TIER_RATINGS.trained, 0, 10));
         meta.duel = {
             active: true,
             over: false,
@@ -1532,9 +1538,9 @@
             round: 0,
             domain: d,
             player: { name: playerName, rating: ratingFor(pEntry, d, fallback), poise: pPoise, maxPoise: pPoise, injuries: 0, momentum: 0, opening: false },
-            opp: { name: oppName, rating: oEntry ? ratingFor(oEntry, d, fallback) : clamp(TIER_RATINGS.trained, 0, 10), poise: oPoise, maxPoise: oPoise, injuries: 0, momentum: 0, opening: false },
+            opp: { name: oppName, rating: oppRating, poise: oPoise, maxPoise: oPoise, injuries: 0, momentum: 0, opening: false, estimated: !oEntry && Number.isFinite(oppEstimate) },
         };
-        dlog('duel started:', playerName, 'vs', oppName, '(' + d + ')');
+        dlog('duel started:', playerName, 'vs', oppName, '(' + d + ') opp rating', oppRating, oEntry ? '(sheet)' : (Number.isFinite(oppEstimate) ? '(estimated)' : '(fallback)'));
         return meta.duel;
     }
 
@@ -2131,7 +2137,7 @@
                     autoSeedRunning = true;
                     Promise.resolve(seedSheet({ auto: true })).finally(() => { autoSeedRunning = false; });
                 }
-                startDuel(meta, adj.actor, adj.duel_start, adj.domain);
+                startDuel(meta, adj.actor, adj.duel_start, adj.domain, adj.opponent_rating);
                 const res = resolveDuelExchange(meta, adj.circumstance);
                 const directive = buildDuelDirective(meta, adj, res);
                 setInjection(directive);

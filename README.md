@@ -281,6 +281,16 @@ trade drops both fighters at once. Tune frequency with the **Tie window**
 under Outcome feel (0 disables; 0.06 default; higher = more ties); it affects
 only fighting exchanges, never single checks.
 
+## Round-1 opponent estimate (v0.11.2)
+
+No more under-rated opening exchange. When a duel opens against someone not on
+the sheet, the referee — in the SAME call that opens the duel, so no extra
+latency — estimates their rating from the scene and any description in
+context: a "legendary warlord who never lost" opens at 9, a "trembling
+farmhand" at 2, instead of the flat trained-4. Round 1 is now a fair fight
+immediately. A real sheet entry always overrides the estimate, and the
+background seed still refines the number for round 2+ with a considered rating.
+
 ## Empty sheet at fight time (v0.11)
 
 The first auto-seed now fires after just 2 messages (was 4), and if a duel
