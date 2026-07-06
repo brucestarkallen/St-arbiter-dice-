@@ -1,5 +1,5 @@
 {
-    "display_name": "Arbiter",
+    "display_name": "Arbiter Fight and Battle",
     "loading_order": 100,
     "requires": [],
     "optional": [],
@@ -7,7 +7,7 @@
     "css": "style.css",
     "author": "brucestarkallen",
     "version": "0.25.0",
-    "homePage": "https://github.com/brucestarkallen/St-arbiter-dice-",
+    "homePage": "https://github.com/brucestarkallen/SillyTavern-Arbiter-Fight-and-Battle",
     "auto_update": false,
     "generate_interceptor": "arbiterInterceptor"
 }

@@ -3088,7 +3088,7 @@
 <div id="arb_settings">
   <div class="inline-drawer">
     <div class="inline-drawer-toggle inline-drawer-header">
-      <b>Arbiter</b>&nbsp;<small class="arb_ver">v${VERSION}</small>
+      <b>Arbiter Fight and Battle</b>&nbsp;<small class="arb_ver">v${VERSION}</small>
       <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
     </div>
     <div class="inline-drawer-content">

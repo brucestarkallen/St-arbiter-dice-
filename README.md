@@ -1,11 +1,44 @@
-# Arbiter (SillyTavern extension)
+# Arbiter — Fight and Battle
 
-Outcome adjudication for roleplay. The storyteller LLM never decides whether your
-character succeeds — Arbiter does, with real randomness on a realistic probability
-curve, and injects the verdict as a binding note the storyteller must narrate.
+A dice-driven **outcome referee** for SillyTavern roleplay. Your storyteller LLM
+never gets to decide whether you succeed — Arbiter does, with real randomness on a
+realistic probability curve, and hands the storyteller a binding verdict to narrate.
+The point is simple: **your character can genuinely lose.** Arbiter never flatters
+the player.
 
-Works with any preset, any character card, any model. No system prompt changes
-required. Toggle it off and SillyTavern behaves exactly as before.
+Everything is invisible and automatic. Works with any preset, any character card,
+any model — no system-prompt changes. Toggle it off and SillyTavern behaves exactly
+as before.
+
+## What it does
+
+- **Adjudicates any uncertain action** — a leap, a lie, a lockpick, a secret power —
+  on a logistic (Elo-style) probability curve sampled with crypto RNG, resolved into
+  six degrees of success from DECISIVE down to DISASTER (with fail-forward setbacks
+  in between, so a miss opens a door rather than stonewalling).
+- **Runs real fights at every scale**, escalating automatically from the fiction:
+  - **Duels** — detailed one-on-one combat with poise, momentum, exploitable
+    openings, multi-strike combos, and disengage-to-recover.
+  - **Battles** — skirmish-scale group combat; you fight and/or command while the
+    rest of the field resolves around you, with morale and rout.
+  - **War** — army-scale combat you command: formations, stratagems, commander
+    sorties, persistent battlefield conditions, and collapse.
+- **Tracks lasting state** — persistent injuries and gear (a broken arm, a
+  masterwork blade), plus **composure**: fear, horror, and trauma erode focus and
+  can break a fighter's nerve — on the enemy as much as on you.
+- **Keeps the world alive between the action** — an ambient pity-timer event engine
+  and background "world threads" surface complications, encounters, and shifts in
+  the wider setting, tone-guarded so they never force combat or derail your move.
+- **Builds its own capability sheet** by reading your story and memory as you play —
+  no manual stat entry — and calibrates ratings to the setting's *own* power
+  hierarchy (a top-ranked "student" is rated elite, not average).
+
+Under the hood it's rigorously fair: exchange damage is exactly symmetric (no hidden
+tilt toward the player), the referee only ever sees a neutral prompt (never your
+persona or the card's "unbeatable protagonist" framing), and the injected verdict is
+purely qualitative — it never leaks a die, a probability, or a stat to the
+storyteller. The whole engine is covered by 45 regression suites that freeze those
+fairness, stability, and no-spoiler guarantees; see the audit notes further down.
 
 ## How it works
 
