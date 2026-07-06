@@ -12,9 +12,12 @@ require(require('path').join(__dirname, '..', 'index.js'));
 const E = globalThis.ArbiterEngine; const I = globalThis.arbiterInterceptor;
 let fails = 0; const ok = (n, c) => { console.log(n + ':', c ? 'OK' : 'FAIL'); if (!c) fails++; };
 (async () => {
-  // Opening a duel gives the opponent a composure pool.
-  md.arbiter = { sheet: { actors: { 'Jovan': { default: 7, domains: { melee: 7 } } } }, log: [], oneShot: 'force', cache: null };
-  respObj = JSON.stringify({ check:true, action:'strike the cultist', domain:'melee', actor:'Jovan', opposition_kind:'actor', opposition:'Cultist', circumstance:0, duel_start:'Cultist', opponent_rating:6 });
+  // Opening a duel gives the opponent a composure pool. (Cultist is given a
+  // deep poise pool via the sheet so the two forced HORROR exchanges below can't
+  // fell them — this test is about NERVE eroding over exchanges, not lethality;
+  // post-v0.21 margin-scaling means two strong hits could otherwise end it.)
+  md.arbiter = { sheet: { actors: { 'Jovan': { default: 7, domains: { melee: 7 } }, 'Cultist': { default: 6, domains: { melee: 6 }, poise: 18 } } }, log: [], oneShot: 'force', cache: null };
+  respObj = JSON.stringify({ check:true, action:'strike the cultist', domain:'melee', actor:'Jovan', opposition_kind:'actor', opposition:'Cultist', circumstance:0, duel_start:'Cultist' });
   await I([{ is_user:true, mes:'I attack the cultist', send_date:'o1' }], 0, () => {}, 'normal');
   ok('opponent has a composure pool', typeof md.arbiter.duel.opp.composure === 'number' && md.arbiter.duel.opp.composureMax === 6);
 
