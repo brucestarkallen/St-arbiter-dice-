@@ -366,8 +366,15 @@ duels/battles/wars all terminate with valid victors and never produce NaN,
 composure and all pity-timer dice stay inside their bounds, story-seed pools are
 consumed exactly once, and every normalizer survives arbitrary malformed model
 output without throwing. Those checks are now frozen as three standing regression
-suites (44 total), so no future change can silently break the fairness or
-stability guarantees the engine rests on.
+suites (four total): the invariant suites above, plus an end-to-end suite that
+drives the *real* interceptor through every production flow — no-check turns,
+single checks, duel start/exchange/finish, battle and war openings, fast mode,
+swipe-stability (a swipe or regenerate re-rolls the prose, never the fate),
+edit-rewind (editing an action rewinds cleanly instead of stacking a second
+outcome), and re-seeding after a fight — while asserting that no injected
+directive ever leaks a mechanical number (a delta, probability, or die) to the
+storyteller. Forty-five suites in total, so no future change can silently break
+the fairness, stability, or immersion the engine rests on.
 
 
 
