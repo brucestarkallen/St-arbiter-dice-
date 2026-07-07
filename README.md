@@ -387,7 +387,22 @@ terrifying monster can unnerve you in the same fight. (Ambient, non-combatant
 crowds are still narrated rather than individually simulated — but anyone you
 actually fight has a real, breakable nerve.)
 
-## Full-engine audit + permanent invariant tests (v0.25)
+## The opponent is never you — name-part guard (v0.26)
+
+The referee identifies the fighters, and occasionally it split a player's full
+name and handed a *piece of it* back as the opponent — e.g. with the persona
+named "Jovan" but the story calling them "Jovan Wessex", a duel could open as
+*Jovan vs Wessex*, labelling the enemy with the player's own surname. Three fixes
+close this: the referee is now told the player may appear under a fuller name and
+that **every** part of it (given name and surname) is the player; an explicit rule
+forbids using any part of the player's name as the opponent; and a code guard
+drops a proposed foe that is really a word of the player's own name, while leaving
+genuine opponents — including multi-word names like "Piers Halloway" — and real
+actor/opponent inversions untouched. Tip: setting your SillyTavern persona to your
+character's **full** name (e.g. "Jovan Wessex") makes the guard airtight, since it
+then recognises every part of the name as you.
+
+
 
 Every subsystem was put under a systematic correctness audit: the probability
 core, exchange economy, single/combo/recovery duels, skirmish battles, army-scale

@@ -22,7 +22,7 @@
     'use strict';
 
     const MODULE = 'arbiter';
-    const VERSION = '0.25.0';
+    const VERSION = '0.26.0';
     const INJECT_KEY = 'ARBITER_OUTCOME';
     const LOG = '[Arbiter]';
 
@@ -767,6 +767,7 @@
         '- circumstance is PHYSICAL tactical advantage ONLY: position, momentum, surprise, preparation, exposure of the target, terrain, impairment, haste. Reward concrete tactics and exploited PHYSICAL weaknesses (+); penalize bad position, impairment, or haste (-). Use 0 when nothing notable applies.',
         '- NEVER penalize an action for being illegal, dishonorable, a foul, against duel etiquette, unsporting, or immoral, and never mention rules, sanctions, penalties, or disqualification. You do not know this world\'s rules; whether a move is "allowed" is the storyteller\'s to narrate, not yours to score. A dirty tactic that gives a real physical edge (a groin kick, sand in the eyes, a low blow) is a POSITIVE circumstance, not a negative one. Judge only what works, not what is permitted.',
         '- The opponent is WHOEVER the fiction says the player is fighting in <recent>/<action>. Use that name. If they are also on the sheet, use the sheet spelling; if not, still name them from the fiction and set opposition_kind "actor" (they will be rated as trained). NEVER substitute a different sheet name just because it is familiar — the scene\'s named opponent always wins over a sheet entry.',
+        '- The opponent is NEVER the player. Do NOT use the player\'s name, or ANY part of it (their given name OR their family name/surname), as the opponent (in "opposition" or "duel_start"). If the player is "' + (ctx().name1 || 'the player') + '" and the story calls them "' + (ctx().name1 || 'the player') + ' Wessex", then BOTH "' + (ctx().name1 || 'the player') + '" and "Wessex" are the player — the opponent is never either. Name the opponent by the opponent\'s OWN name as the scene uses it (their given name is fine); if you cannot find a name distinct from the player\'s, the action is probably a single check, not a duel.',
         '- opposition must be a PERSON or creature the player fights. Never use a place, academy, house, faction, or organization name as the opposition.',
     ].join('\n');
 
@@ -815,7 +816,7 @@
         const action = String(lastUserMes.mes).slice(0, 700);
         const memBlock = s.adjIncludeMemory ? collectMemoryBlock(clamp(s.adjContextK, 4, 500) * 1000).block : '';
         const cardBlock = s.adjIncludeCard ? collectStoryContext(clamp(s.adjContextK, 4, 500) * 1000) : '';
-        return '<player>\nThe player character is "' + playerName + '". The text in <action> is written BY the player: "I" and second-person "you" in it both mean ' + playerName + ' acting. The storyteller\'s messages in <recent> may be labeled with a card/narrator name that is NOT a combatant.\n</player>\n\n<sheet>\n' + sheet + '\n</sheet>\n\n' + (cardBlock ? cardBlock + '\n\n' : '') + (memBlock ? memBlock + '\n\n' : '') + '<recent>\n' + recent + '\n</recent>\n\n<action>\n' + action + '\n</action>';
+        return '<player>\nThe player character is "' + playerName + '". The text in <action> is written BY the player: "I" and second-person "you" in it both mean ' + playerName + ' acting. The player may appear in <recent> under a FULLER name — a given name plus a family name/surname, a title, or a nickname (e.g. "' + playerName + ' Somesurname", or just "Somesurname"). EVERY part of the player\'s name refers to the player. Never treat the player\'s own surname, given name, or any part of their name as a separate person, and never let it become the opponent. The storyteller\'s messages in <recent> may be labeled with a card/narrator name that is NOT a combatant.\n</player>\n\n<sheet>\n' + sheet + '\n</sheet>\n\n' + (cardBlock ? cardBlock + '\n\n' : '') + (memBlock ? memBlock + '\n\n' : '') + '<recent>\n' + recent + '\n</recent>\n\n<action>\n' + action + '\n</action>';
     }
 
     function normalizeAdj(obj) {
@@ -839,21 +840,33 @@
             const a = n.toLowerCase(), b = playerName.toLowerCase();
             return a === b || a.includes(b) || b.includes(a);
         };
+        // Name-split repair: the referee sometimes returns the player's FULL name
+        // as the actor and hands a piece of it back as the "opponent" (actor
+        // "Jovan Wessex" -> duel_start "Wessex"). Only when the model's OWN actor
+        // claim is the player (contains the persona name) and is multi-word, a foe
+        // matching one of its words is that misparse of the player's own name.
+        const isNamePartOfActor = (n) => {
+            if (!n || !modelActor || !isPlayerish(modelActor)) return false;
+            const toks = modelActor.toLowerCase().split(/[\s,]+/).filter(Boolean);
+            return toks.length > 1 && toks.includes(n.toLowerCase().trim());
+        };
+        const isSelf = (n) => isPlayerish(n) || isNamePartOfActor(n);
         let duelStart = (typeof obj.duel_start === 'string' && obj.duel_start.trim()) ? obj.duel_start.trim().slice(0, 60) : null;
-        if (isPlayerish(duelStart)) {
-            // The model put the player on the wrong side. If it named someone
-            // else as "actor", that someone is the real opponent; else drop.
+        if (isSelf(duelStart)) {
+            // The model put the player (or a piece of the player's name) on the
+            // wrong side. If it named someone genuinely distinct as "actor", that
+            // someone is the real opponent; else drop and let it be a plain check.
             duelStart = (modelActor && !isPlayerish(modelActor)) ? modelActor.slice(0, 60) : null;
-            dlog('inverted duel_start repaired →', duelStart || '(dropped)');
+            dlog('self-named duel_start repaired →', duelStart || '(dropped)');
         }
-        if (kind === 'actor' && isPlayerish(opposition)) {
-            // Opposition can never be the player either.
+        if (kind === 'actor' && isSelf(opposition)) {
+            // Opposition can never be the player (or part of their name) either.
             opposition = (modelActor && !isPlayerish(modelActor)) ? modelActor : 'hard';
-            dlog('inverted opposition repaired →', opposition);
+            dlog('self-named opposition repaired →', opposition);
         }
         let battleStart = normalizeRoster(obj.battle_start);
         if (battleStart) {
-            battleStart.enemies = (battleStart.enemies || []).filter(n => !isPlayerish(n));
+            battleStart.enemies = (battleStart.enemies || []).filter(n => !isSelf(n));
             if (!battleStart.enemies.length) battleStart = null;
         }
 
