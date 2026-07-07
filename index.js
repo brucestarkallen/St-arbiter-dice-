@@ -22,7 +22,7 @@
     'use strict';
 
     const MODULE = 'arbiter';
-    const VERSION = '0.27.0';
+    const VERSION = '0.28.0';
     const INJECT_KEY = 'ARBITER_OUTCOME';
     const LOG = '[Arbiter]';
 
@@ -366,9 +366,13 @@
         DECISIVE: { condMod: 2, favors: 'allies' },
         SUCCESS: { condMod: 1, favors: 'allies' },
         SUCCESS_COST: { condMod: 1, favors: 'allies', selfCost: 0.5 },
-        SETBACK: { condMod: 0, opening: true },
-        FAILURE: { condMod: 0, enemyMomentum: true },
-        DISASTER: { condMod: 1, favors: 'enemies' },
+        // A botched stratagem hands the ENEMY the same kind of standing advantage
+        // a good one hands you — otherwise stratagems are a one-way ratchet and the
+        // player's army can't lose. Mirrored: DECISIVE/DISASTER +/-2,
+        // SUCCESS/FAILURE +/-1, SUCCESS_COST/SETBACK +/-1.
+        SETBACK: { condMod: 1, favors: 'enemies', opening: true },
+        FAILURE: { condMod: 1, favors: 'enemies', enemyMomentum: true },
+        DISASTER: { condMod: 2, favors: 'enemies' },
     };
 
     /**
@@ -1042,6 +1046,18 @@
         return units;
     }
 
+    // Is `name` the player? True for the player's exact name, a fragment of it (a
+    // bare surname/given-name), or the player's name extended — token-based, so a
+    // distinct ally who merely shares a surname (a sibling) is NOT filtered out.
+    function isPlayerName(name, playerName) {
+        const n = String(name || '').toLowerCase().trim(), p = String(playerName || '').toLowerCase().trim();
+        if (!n || !p) return false;
+        if (n === p) return true;
+        const nt = n.split(/[\s,]+/).filter(Boolean), pt = p.split(/[\s,]+/).filter(Boolean);
+        if (!nt.length || !pt.length) return false;
+        return nt.every(t => pt.includes(t)) || pt.every(t => nt.includes(t));
+    }
+
     function startBattle(meta, allyNames, enemyNames, domain, scaleMismatch) {
         const s = getSettings();
         const d = String(domain || 'melee').toLowerCase();
@@ -1053,11 +1069,7 @@
             poise: poiseFor(pEntry, s.duelPoise), maxPoise: poiseFor(pEntry, s.duelPoise),
             injuries: 0, momentum: 0, opening: false, standing: true, isPlayer: true,
         };
-        const pn = playerName.toLowerCase();
-        const allies = buildUnits(meta, (allyNames || []).filter(n => {
-            const x = n.toLowerCase();
-            return x !== pn && !x.includes(pn) && !pn.includes(x);
-        }), d, false);
+        const allies = buildUnits(meta, (allyNames || []).filter(n => !isPlayerName(n, playerName)), d, false);
         const enemies = buildUnits(meta, enemyNames || [], d, true);
         if (!enemies.length) return null;
         meta.battle = {
@@ -1307,8 +1319,7 @@
             }
             return units;
         };
-        const pn = playerName.toLowerCase();
-        const allies = mkUnits((allyNames || []).filter(n => { const x = n.toLowerCase(); return x !== pn && !x.includes(pn) && !pn.includes(x); }), false);
+        const allies = mkUnits((allyNames || []).filter(n => !isPlayerName(n, playerName)), false);
         const enemies = mkUnits(enemyNames || [], true);
         if (!enemies.length) return null;
         meta.battle = {

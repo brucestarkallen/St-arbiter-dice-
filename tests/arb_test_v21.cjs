@@ -16,7 +16,7 @@ let fails = 0; const ok = (n, c) => { console.log(n + ':', c ? 'OK' : 'FAIL'); i
   md.arbiter = { sheet: { actors: {} }, log: [], oneShot: null, cache: null,
     duel: { active:true, over:false, victor:null, round:3, domain:'ice',
       player:{name:'Jovan',rating:7,poise:2,maxPoise:5,injuries:0,momentum:0.5,opening:false},
-      opp:{name:'Kael',rating:5,poise:4,maxPoise:5,injuries:0,momentum:0,opening:false} } };
+      opp:{name:'Kael',rating:5,poise:4,maxPoise:5,injuries:0,momentum:0,opening:false,composure:5,composureMax:5} } };
   respObj = '{"exchange":true,"move_kind":"recover","action":"weave ice-vines to mend and catch breath","circumstance":2,"why":"brief opening to disengage"}';
   await I([{ is_user: true, mes: 'I pull back and let the ice close my wounds', send_date: 'r1' }], 0, () => {}, 'normal');
   const d = md.arbiter.duel;
@@ -33,12 +33,16 @@ let fails = 0; const ok = (n, c) => { console.log(n + ':', c ? 'OK' : 'FAIL'); i
   await I([{ is_user: true, mes: 'I fully heal', send_date: 'r2' }], 0, () => {}, 'normal');
   ok('cannot exceed maxPoise even on a big heal', md.arbiter.duel.player.poise === 5);
 
-  // An ATTACK move still damages normally (recovery is opt-in)
+  // An ATTACK move still damages normally (recovery is opt-in). An attack is a
+  // scored exchange, so a single swing CAN miss — drive a few and confirm the
+  // attack PATH deals damage. (Not a fairness claim; just that attacks work.)
   md.arbiter.duel = { active:true, over:false, victor:null, round:1, domain:'ice',
     player:{name:'Jovan',rating:9,poise:5,maxPoise:5,injuries:0,momentum:0,opening:false},
-    opp:{name:'Kael',rating:3,poise:5,maxPoise:5,injuries:0,momentum:0,opening:false} };
+    opp:{name:'Kael',rating:3,poise:5,maxPoise:5,injuries:0,momentum:0,opening:false,composure:5,composureMax:5} };
   respObj = '{"exchange":true,"move_kind":"attack","action":"drive the blade in","circumstance":1,"why":"opening"}';
-  await I([{ is_user: true, mes: 'I strike hard', send_date: 'a1' }], 0, () => {}, 'normal');
+  for (let k = 0; k < 4 && md.arbiter.duel.opp.poise >= 5 && !md.arbiter.duel.over; k++) {
+    await I([{ is_user: true, mes: 'I strike hard', send_date: 'atk' + k }], 0, () => {}, 'normal');
+  }
   ok('attack still reduces opponent poise', md.arbiter.duel.opp.poise < 5);
 
   console.log(fails === 0 ? 'ALL V21 TESTS PASSED' : fails + ' FAILURES'); process.exit(fails ? 1 : 0);

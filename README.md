@@ -387,7 +387,37 @@ terrifying monster can unnerve you in the same fight. (Ambient, non-combatant
 crowds are still narrated rather than individually simulated — but anyone you
 actually fight has a real, breakable nerve.)
 
-## Performance-first defaults + whole-word actor matching (v0.27)
+## Armies can genuinely lose — war fairness fix (v0.28)
+
+A deep fairness audit of mass combat found that duels, party battles, and the
+event/thread engine were sound, but **army-scale war had a real "the player
+always wins" flaw**. Winning a stratagem planted a *persistent* battlefield
+condition in your favor, but losing one (short of an outright disaster) planted
+nothing — so any use of stratagems ratcheted the whole war toward you. At equal
+strength with neutral command, the player's army was winning ~95%+ of the time,
+and still won when outnumbered two-to-one.
+
+Battlefield conditions are now **symmetric**: a botched stratagem hands the enemy
+the same kind of standing advantage a good one hands you (DECISIVE/DISASTER ±2,
+SUCCESS/FAILURE ±1, SUCCESS_COST/SETBACK ±1), so a break-even stratagem record
+nets zero. After the fix, an evenly-matched war with neutral command is genuinely
+losable (~37% win), skilled command wins far more (~85% at a clear tactical
+edge), blundering loses badly (~4%), and being outnumbered or outmatched drags
+you down as it should. The player can lose — which is the whole point.
+
+Party battles were already fair once you account for the player being an extra
+combatant (an evenly-matched party fight is very much losable), so no change was
+needed there. The world/thread engine was verified too: it stays gated out of
+combat, its background beats never leak dice or mechanical values, every
+disruptive beat carries a "fit the tone, no forced combat, engage or ignore"
+guard, and threads reliably advance to resolution — an alive world, not a spammy
+or intrusive one.
+
+Also fixed: the same whole-word name matching now guards the **ally rosters** in
+battles and wars, so an ally who merely shares your surname (a sibling fighting
+at your side) is no longer mistaken for you and dropped from your own force.
+
+
 
 The out-of-the-box defaults are tuned for accuracy over cost, so the referee is as
 smart as possible with no setup: it now reads your **full memory stack**

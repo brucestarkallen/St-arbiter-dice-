@@ -13,9 +13,17 @@ require(require('path').join(__dirname, '..', 'index.js'));
 const E = globalThis.ArbiterEngine; const I = globalThis.arbiterInterceptor;
 let fails = 0; const ok = (n, c) => { console.log(n + ':', c ? 'OK' : 'FAIL'); if (!c) fails++; };
 
-// 1. Stratagem mapping: DISASTER backfires (favors enemies)
-ok('stratagem DISASTER backfires to enemy', E.STRATAGEM_EFFECTS.DISASTER.favors === 'enemies' && E.STRATAGEM_EFFECTS.DISASTER.condMod === 1);
+// 1. Stratagem mapping is SYMMETRIC: a botched stratagem hands the enemy the same
+//    standing advantage a good one hands the player (so a war is genuinely losable).
+ok('stratagem DISASTER backfires to enemy (mirror of DECISIVE)', E.STRATAGEM_EFFECTS.DISASTER.favors === 'enemies' && E.STRATAGEM_EFFECTS.DISASTER.condMod === 2);
 ok('stratagem DECISIVE creates strong allied condition', E.STRATAGEM_EFFECTS.DECISIVE.favors === 'allies' && E.STRATAGEM_EFFECTS.DECISIVE.condMod === 2);
+ok('stratagem SETBACK favors enemy (mirror of SUCCESS_COST)', E.STRATAGEM_EFFECTS.SETBACK.favors === 'enemies' && E.STRATAGEM_EFFECTS.SETBACK.condMod === 1);
+ok('stratagem FAILURE favors enemy (mirror of SUCCESS)', E.STRATAGEM_EFFECTS.FAILURE.favors === 'enemies' && E.STRATAGEM_EFFECTS.FAILURE.condMod === 1);
+ok('stratagem conditions net to zero on a balanced win/loss record', (() => {
+  const w = E.STRATAGEM_EFFECTS.DECISIVE.condMod + E.STRATAGEM_EFFECTS.SUCCESS.condMod + E.STRATAGEM_EFFECTS.SUCCESS_COST.condMod;
+  const l = E.STRATAGEM_EFFECTS.DISASTER.condMod + E.STRATAGEM_EFFECTS.FAILURE.condMod + E.STRATAGEM_EFFECTS.SETBACK.condMod;
+  return w === l;
+})());
 
 (async () => {
   // 2. war_start auto-opens a war with formations + commander ratings
