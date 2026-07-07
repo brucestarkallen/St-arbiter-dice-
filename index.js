@@ -22,7 +22,7 @@
     'use strict';
 
     const MODULE = 'arbiter';
-    const VERSION = '0.26.0';
+    const VERSION = '0.26.1';
     const INJECT_KEY = 'ARBITER_OUTCOME';
     const LOG = '[Arbiter]';
 
@@ -423,7 +423,7 @@
         compactRecent, budgetedTranscript, buildAdjUserPrompt, collectStoryContext,
         wiActivateEntries, collectWorldInfoBlock, wiResolveBooks, wiViaEngine, backgroundTick,
         resolveDuelSequence, resolveDuelExchange, normalizeDuelAdj, buildDuelDirective, buildDirective,
-        startBattle, resolveBattleRound, startWar, resolveWarRound, normalizeBattleAdj, normalizeWarAdj, normalizeAdj,
+        startBattle, resolveBattleRound, startWar, resolveWarRound, normalizeBattleAdj, normalizeWarAdj, normalizeAdj, startDuel,
         resolveDuelRecovery, resolveAdj, shiftCombatantComposure, getLastAdj: () => LAST_ADJ,
     };
 
@@ -834,34 +834,48 @@
         const kind = obj.opposition_kind === 'actor' ? 'actor' : 'tier';
         let opposition = String(obj.opposition || 'moderate').trim() || 'moderate';
 
-        // Swap repair: an inverted referee names the PLAYER as the foe.
-        const isPlayerish = (n) => {
-            if (!n) return false;
-            const a = n.toLowerCase(), b = playerName.toLowerCase();
-            return a === b || a.includes(b) || b.includes(a);
-        };
-        // Name-split repair: the referee sometimes returns the player's FULL name
-        // as the actor and hands a piece of it back as the "opponent" (actor
-        // "Jovan Wessex" -> duel_start "Wessex"). Only when the model's OWN actor
-        // claim is the player (contains the persona name) and is multi-word, a foe
-        // matching one of its words is that misparse of the player's own name.
-        const isNamePartOfActor = (n) => {
-            if (!n || !modelActor || !isPlayerish(modelActor)) return false;
-            const toks = modelActor.toLowerCase().split(/[\s,]+/).filter(Boolean);
-            return toks.length > 1 && toks.includes(n.toLowerCase().trim());
-        };
+        // ── Opponent-identity hardening (fool-proofing) ───────────────────
+        // The opponent must be a REAL, DISTINCT entity: never the player, and
+        // never a mere PIECE of the player's name (a referee that read "Jovan
+        // Wessex" must not hand back "Wessex" as the foe). All matching is
+        // TOKEN-based, never substring, so:
+        //   - a genuine foe like "Anakin" is never mistaken for a player "Ana";
+        //   - a sibling like "Claire Wessex" is NOT the player, even though it
+        //     shares the surname, because it carries a distinct given name.
+        const nrm = (x) => String(x || '').toLowerCase().trim();
+        const toksOf = (x) => nrm(x).split(/[\s,]+/).filter(Boolean);
+        const subsetOf = (a, b) => { const at = toksOf(a), bt = toksOf(b); return at.length > 0 && at.every(t => bt.includes(t)); };
+        // A name is the player when it matches, is a FRAGMENT of the player's
+        // name (a bare surname/given-name), OR is the player's name EXTENDED
+        // (persona "Jovan" vs the story's "Jovan Wessex"). A name that carries a
+        // distinct token in BOTH directions (a sibling "Claire Wessex", or an
+        // unrelated "Anakin") is a different person.
+        const isPlayerish = (n) => !!n && (nrm(n) === nrm(playerName) || subsetOf(n, playerName) || subsetOf(playerName, n));
+        // The model's OWN actor claim counts as the player when it carries the
+        // player's name tokens (persona "Jovan" -> claim "Jovan Wessex"). A single
+        // word of THAT claim handed back as the foe is the name-split misparse —
+        // the surname the referee wrongly peeled off the player.
+        const actorIsPlayer = !!modelActor && (subsetOf(playerName, modelActor) || isPlayerish(modelActor));
+        const isNamePartOfActor = (n) => { if (!n || !actorIsPlayer) return false; const at = toksOf(modelActor); return at.length > 1 && at.includes(nrm(n)); };
         const isSelf = (n) => isPlayerish(n) || isNamePartOfActor(n);
+        const TIER_WORDS = new Set(['trivial', 'easy', 'moderate', 'hard', 'extreme', 'mook', 'trained', 'competent', 'veteran', 'elite', 'formidable', 'master', 'legendary', 'apex', 'inferior', 'peer', 'superior']);
+        // First candidate that is a clean, distinct foe name (not the player, not
+        // a difficulty tier). Lets a mislabeled duel_start recover the real foe
+        // from the referee's OTHER identifications before we give up.
+        const cleanFoe = (...cands) => { for (const c of cands) { const t = String(c || '').trim(); if (t && !isSelf(t) && !TIER_WORDS.has(nrm(t))) return t.slice(0, 60); } return null; };
+        const rawOppName = (kind === 'actor') ? opposition : '';
+
         let duelStart = (typeof obj.duel_start === 'string' && obj.duel_start.trim()) ? obj.duel_start.trim().slice(0, 60) : null;
-        if (isSelf(duelStart)) {
-            // The model put the player (or a piece of the player's name) on the
-            // wrong side. If it named someone genuinely distinct as "actor", that
-            // someone is the real opponent; else drop and let it be a plain check.
-            duelStart = (modelActor && !isPlayerish(modelActor)) ? modelActor.slice(0, 60) : null;
-            dlog('self-named duel_start repaired →', duelStart || '(dropped)');
+        if (duelStart && isSelf(duelStart)) {
+            // RECOVER the true foe from the referee's other fields (its opposition
+            // naming, then an inverted actor slot). Only if none is a clean distinct
+            // name do we drop to a plain check — the attack still resolves, and the
+            // next turn re-opens the duel cleanly once the foe is named right.
+            duelStart = cleanFoe(rawOppName, modelActor);
+            dlog('self-named duel_start repaired →', duelStart || '(dropped to single check)');
         }
         if (kind === 'actor' && isSelf(opposition)) {
-            // Opposition can never be the player (or part of their name) either.
-            opposition = (modelActor && !isPlayerish(modelActor)) ? modelActor : 'hard';
+            opposition = cleanFoe(duelStart, modelActor) || 'hard';
             dlog('self-named opposition repaired →', opposition);
         }
         let battleStart = normalizeRoster(obj.battle_start);

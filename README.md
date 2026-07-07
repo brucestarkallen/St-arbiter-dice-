@@ -392,15 +392,25 @@ actually fight has a real, breakable nerve.)
 The referee identifies the fighters, and occasionally it split a player's full
 name and handed a *piece of it* back as the opponent — e.g. with the persona
 named "Jovan" but the story calling them "Jovan Wessex", a duel could open as
-*Jovan vs Wessex*, labelling the enemy with the player's own surname. Three fixes
-close this: the referee is now told the player may appear under a fuller name and
-that **every** part of it (given name and surname) is the player; an explicit rule
-forbids using any part of the player's name as the opponent; and a code guard
-drops a proposed foe that is really a word of the player's own name, while leaving
-genuine opponents — including multi-word names like "Piers Halloway" — and real
-actor/opponent inversions untouched. Tip: setting your SillyTavern persona to your
-character's **full** name (e.g. "Jovan Wessex") makes the guard airtight, since it
-then recognises every part of the name as you.
+*Jovan vs Wessex*, labelling the enemy with the player's own surname. The guard
+is TOKEN-based (never crude substring matching) and fool-proofed both ways:
+
+- The player, any fragment of their name (a bare surname), and any *extension*
+  of it are all recognised as the player and can never be the opponent.
+- It does **not** over-fire: a distinct foe that merely shares a surname (a
+  sibling like "Claire Wessex"), or whose name happens to contain the player's
+  short name as letters ("Anakin" vs a player "Ana"), stays a valid opponent.
+- When the referee mislabels the foe, the real name is **recovered** from its
+  other identifications (its opposition field, then an inverted actor slot)
+  before the duel is ever dropped; only if no clean, distinct name exists
+  anywhere does the attack fall back to a plain check (which still resolves, and
+  the next turn re-opens the duel cleanly). An unseeded foe still opens a proper
+  duel with an estimated rating.
+
+Plus the referee is told the player may appear under a fuller name and that every
+part of it is the player, with an explicit rule never to use any part of the
+player's name as the opponent. Tip: setting your SillyTavern persona to your
+character's **full** name (e.g. "Jovan Wessex") makes it airtight.
 
 
 
