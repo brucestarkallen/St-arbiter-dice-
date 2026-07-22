@@ -16,7 +16,10 @@ as before.
   on a logistic (Elo-style) probability curve sampled with crypto RNG, resolved into
   six degrees of success from DECISIVE down to DISASTER (with fail-forward setbacks
   in between, so a miss opens a door rather than stonewalling).
-- **Runs real fights at every scale**, escalating automatically from the fiction:
+- **Runs real fights at every scale**, escalating automatically from the fiction —
+  in your choice of two styles: **tracked** (poise, injuries, and a called
+  winner) or **outcome-only** (every exchange gets its verdict, but no health
+  is kept and the engine never ends the fight — the storyteller does):
   - **Duels** — detailed one-on-one combat with poise, momentum, exploitable
     openings, multi-strike combos, and disengage-to-recover.
   - **Battles** — skirmish-scale group combat; you fight and/or command while the
@@ -41,7 +44,7 @@ Under the hood it's rigorously fair: exchange damage is exactly symmetric (no hi
 tilt toward the player), the referee only ever sees a neutral prompt (never your
 persona or the card's "unbeatable protagonist" framing), and the injected verdict is
 purely qualitative — it never leaks a die, a probability, or a stat to the
-storyteller. The whole engine is covered by 51 regression suites that freeze those
+storyteller. The whole engine is covered by 52 regression suites that freeze those
 fairness, stability, and no-spoiler guarantees; see the audit notes further down.
 
 ## How it works
@@ -826,6 +829,30 @@ showing at a glance: active/disabled, which adjudicator profile is wired
 (amber warning when falling back to the raw API), mode · preset, and this
 chat's actor/thread counts.
 
+## Fight styles — tracked vs outcome-only
+
+**Outcome feel → Fights** picks how combat resolves:
+
+- **tracked** (default) — the full engine: poise as each side's fighting
+  capacity, forced lasting injuries on decisive results, momentum and
+  openings, morale and rout at battle scale, and a **called winner** the
+  storyteller must narrate. Unchanged from every prior version.
+- **outcome-only** — every exchange (single strikes, combos, battle turns,
+  war orders) still rolls the same fair curve and returns its full verdict,
+  DECISIVE down to DISASTER, at odds set by the real ratings, conditions,
+  scale, and composure. But **nothing is tallied**: no health, no forced
+  injuries, no momentum, no side-strength ticking — and the engine **never
+  declares an end**. Each verdict stands on its own; consequences persist
+  only as the fiction carries them; the **storyteller decides when the fight
+  concludes** and narrates the yield, flight, or finish when the accumulated
+  outcomes earn it. The referee still closes the fight once the fiction
+  clearly ends it, and `/duelend`, `/battleend`, and the HUD ✕ always work.
+  The HUD drops its bars and shows names + round with an *outcome-only* tag.
+
+Composure stays active in both styles — it is nerve, not health, and only
+shapes the odds. Switching styles mid-chat is safe: the setting gates each
+new exchange.
+
 ## Player identity — story name vs persona label
 
 SillyTavern's persona name is *who is typing*; the fiction may call your
@@ -847,10 +874,12 @@ where the two match behave exactly as before.
 
 ## Tests
 
-`tests/` contains 51 suites covering every invariant: the probability
+`tests/` contains 52 suites covering every invariant: the probability
 curve, tier slicing per preset, exchange effects, full battles to
 conclusion, snapshot rewinds, event tiers, thread ladders, memory-collector
-coverage, gate behavior, and player identity (story name vs persona label).
+coverage, gate behavior, player identity (story name vs persona label), and
+the outcome-only fight style (verdicts without health or an engine-called
+end).
 Run them with Node (no dependencies):
 `sh tests/run_all.sh`. Any future change should keep them green.
 

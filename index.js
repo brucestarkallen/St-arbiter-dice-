@@ -22,7 +22,7 @@
     'use strict';
 
     const MODULE = 'arbiter';
-    const VERSION = '0.31.0';
+    const VERSION = '0.32.0';
     const INJECT_KEY = 'ARBITER_OUTCOME';
     const LOG = '[Arbiter]';
     // Committed-turn history depth: how many resolved player turns keep a
@@ -444,8 +444,8 @@
         looksLikeRecovery, combatantComposurePenalty, applyMoraleShock, passiveComposureRecovery,
         compactRecent, budgetedTranscript, buildAdjUserPrompt, collectStoryContext,
         wiActivateEntries, collectWorldInfoBlock, wiResolveBooks, wiViaEngine, backgroundTick,
-        resolveDuelSequence, resolveDuelExchange, normalizeDuelAdj, buildDuelDirective, buildDirective,
-        startBattle, resolveBattleRound, startWar, resolveWarRound, normalizeBattleAdj, normalizeWarAdj, normalizeAdj, startDuel,
+        resolveDuelSequence, resolveDuelExchange, normalizeDuelAdj, buildDuelDirective, buildDuelSequenceDirective, buildDirective,
+        startBattle, resolveBattleRound, buildBattleDirective, startWar, resolveWarRound, buildWarDirective, normalizeBattleAdj, normalizeWarAdj, normalizeAdj, startDuel,
         resolveDuelRecovery, resolveAdj, shiftCombatantComposure, findActor, findActorExact, findActorKey, findActorKeySamePerson, applyConditionChange, liveCombatant, refreshLiveRating, mcName, mcAliases, isMcAlias, samePersonName, reconcilePlayerEntries, seedSheet, restoreSnapshot, deepCopy, ratingFor, getDefaults: () => DEFAULTS, getLastAdj: () => LAST_ADJ,
     };
 
@@ -501,6 +501,7 @@
         skipTag: '[skip]',
         verbs: DEFAULT_VERBS,
         mode: 'adjudicated',      // adjudicated | fast (fast = zero-LLM pre-rolled pool)
+        fightStyle: 'tracked',    // tracked = poise, injuries & a called winner | outcome = verdicts only, no health, storyteller ends fights
         preset: 'realistic',      // gritty | realistic | heroic
         autoDuel: true,           // let the adjudicator open/close duels from the fiction
         autoBattle: true,         // let the adjudicator open group battles from the fiction
@@ -536,6 +537,13 @@
     function saveSettings() {
         try { ctx().saveSettingsDebounced?.(); } catch (e) { warn('saveSettings failed', e); }
     }
+
+    /** Outcome-only fights: every exchange still gets a full-curve verdict,
+     *  but nothing is tallied — no poise, no forced injuries, no momentum,
+     *  and the engine NEVER declares a winner. The fight ends when the
+     *  storyteller's fiction ends it (the referee's combat_ended detection
+     *  and the manual controls still close it). */
+    function outcomeOnly() { return getSettings().fightStyle === 'outcome'; }
 
     function getMeta() {
         const c = ctx();
@@ -1334,6 +1342,28 @@
         let sideMod = 0;
         let mcTargetName = null;
 
+        if (outcomeOnly()) {
+            // Outcome-only: adjudicate the MC's action alone. Casualties,
+            // morale, the rest of the field, and the battle's end all belong
+            // to the storyteller — nothing here ticks or concludes.
+            if (mv.kind === 'command') {
+                const oppLead = Math.max(3, ...standing(b.enemies).map(u => u.rating));
+                const delta = clamp(mc.rating - mc.injuries - oppLead + mv.circumstance + preset.bonus + mAll + composurePenalty(meta) + (b.scaleMismatch || 0), -13, 13);
+                const P = probFromDelta(delta); const u = rngFloat();
+                mcRes = { delta, P, u, tier: sliceOutcome(P, u, preset.mods), command: true };
+            } else {
+                let target = standing(b.enemies).find(u => mv.target && u.name.toLowerCase() === mv.target.toLowerCase());
+                if (!target) target = standing(b.enemies).slice().sort((x, y) => y.rating - x.rating)[0];
+                if (target) {
+                    const delta = clamp((mc.rating - mc.injuries + mc.momentum) - (target.rating - target.injuries + target.momentum) + mv.circumstance + preset.bonus + mAll + composurePenalty(meta) - combatantComposurePenalty(target) + (b.scaleMismatch || 0), -13, 13);
+                    const P = probFromDelta(delta); const u = rngFloat();
+                    mcRes = { delta, P, u, tier: tieCheck(sliceOutcome(P, u, preset.mods), P, u, getSettings().tieBand), command: false };
+                }
+            }
+            b.round += 1;
+            return { mcRes, reports: [], outcome: true };
+        }
+
         if (mv.kind === 'command') {
             const oppLead = Math.max(3, ...standing(b.enemies).map(u => u.rating));
             const openingBonus = mc.opening ? 1 : 0; mc.opening = false;
@@ -1416,14 +1446,16 @@
                 lines.push(mc.name + '\'s move: ' + adj.action + '.');
                 lines.push('Their exchange: ' + t.name + ' — ' + t.text);
             }
-            const fx = EXCHANGE_EFFECTS[out.mcRes.tier] || {};
+            const fx = out.outcome ? {} : (EXCHANGE_EFFECTS[out.mcRes.tier] || {});
             if (fx.injureOpp && !out.mcRes.command) lines.push('Inflict a concrete lasting injury on their opponent and name it.');
             if (fx.injureSelf) lines.push('Inflict a concrete lasting injury on ' + mc.name + ' and name it; it visibly weakens them.');
         }
         const rep = out.reports.slice(0, 4);
         if (rep.length) lines.push('Elsewhere on the field (weave these in as fact): ' + rep.join(' '));
         if (out.reports.length > 4) lines.push('The remaining clashes hold without decision.');
-        if (b.over) {
+        if (out.outcome) {
+            lines.push('Outcome-only battle: only ' + mc.name + '\'s action was scored. The wider field — who falls, who holds, how morale sways — follows the story, and the battle continues until the STORY ends it: narrate the rout, stand-down, or escape yourself when the fiction earns it. Arbiter will not call a side\'s victory.');
+        } else if (b.over) {
             if (b.mcDown) lines.push(mc.name + ' is taken out of the fight — narrate it (downed, disarmed, or dragged clear per tone), then the field resolves: ' + (b.victor === 'allies' ? 'their side still wins the engagement.' : 'their side is beaten.'));
             else lines.push('DECISIVE: the ' + (b.victor === 'allies' ? mc.name + '\'s side has won' : 'enemy side has won') + ' this engagement. Narrate the resolution the fiction demands (rout, surrender, retreat, capture, or worse, per tone). The result is not negotiable.');
         } else {
@@ -1583,6 +1615,34 @@
         let condNote = null;
         let acting = null, target = null;
 
+        if (outcomeOnly()) {
+            // Outcome-only: score this order and nothing else. No strength
+            // ticks, no conditions accrued, no collapse — the storyteller
+            // commands the tide and the day's end.
+            if (mv.kind === 'stratagem') {
+                const delta = clamp(b.cmdA - b.cmdE + mv.circumstance + mAll + preset.bonus + composurePenalty(meta), -13, 13);
+                const P = probFromDelta(delta); const u = rngFloat();
+                focalRes = { delta, P, u, tier: sliceOutcome(P, u, preset.mods), stratagem: true };
+            } else if (mv.kind === 'personal' && mc) {
+                target = pickUnit(b.enemies, mv.target);
+                if (target) {
+                    const delta = clamp((mc.rating - mc.injuries + mc.momentum) - (target.rating - target.injuries + target.momentum) + mv.circumstance + F + mAll + preset.bonus + composurePenalty(meta) - combatantComposurePenalty(target) + (b.scaleMismatch || 0), -13, 13);
+                    const P = probFromDelta(delta); const u = rngFloat();
+                    focalRes = { delta, P, u, tier: tieCheck(sliceOutcome(P, u, preset.mods), P, u, getSettings().tieBand), personal: true };
+                }
+            } else {
+                acting = pickUnit(nonPlayer(b.allies), mv.acting);
+                target = pickUnit(b.enemies, mv.target);
+                if (acting && target) {
+                    const delta = clamp((acting.rating - acting.injuries + acting.momentum + cmdEdge) - (target.rating - target.injuries + target.momentum) + mv.circumstance + F + mAll + preset.bonus + combatantComposurePenalty(acting) - combatantComposurePenalty(target) + (b.scaleMismatch || 0), -13, 13);
+                    const P = probFromDelta(delta); const u = rngFloat();
+                    focalRes = { delta, P, u, tier: tieCheck(sliceOutcome(P, u, preset.mods), P, u, getSettings().tieBand) };
+                }
+            }
+            b.round += 1;
+            return { focalRes, reports: [], condNote: null, acting, target, outcome: true };
+        }
+
         if (mv.kind === 'stratagem') {
             const delta = clamp(b.cmdA - b.cmdE + mv.circumstance + mAll + preset.bonus + composurePenalty(meta), -13, 13);
             const P = probFromDelta(delta); const u = rngFloat();
@@ -1695,7 +1755,9 @@
         if (b.conditions && b.conditions.length) {
             lines.push('Standing conditions: ' + b.conditions.map(c => '"' + c.name + '" (favors ' + (c.favors === 'allies' ? mc.name + '\'s side' : 'the enemy') + ')').join('; ') + '.');
         }
-        if (b.over) {
+        if (out.outcome) {
+            lines.push('Outcome-only war: only this order was scored. Casualties, the tide of the line, and the day\'s end follow the story — the engagement continues until the STORY ends it. Arbiter will not call the field.');
+        } else if (b.over) {
             if (b.mcDown) lines.push(mc.name + ' falls amid the fighting — narrate it (struck down, machine disabled, dragged from the field per tone). Command collapses: the enemy takes the day.');
             else lines.push('DECISIVE: the ' + (b.victor === 'allies' ? 'enemy line shatters — ' + mc.name + '\'s side takes the field' : 'allied line breaks — the enemy takes the field') + '. Narrate the rout, surrender, or withdrawal the fiction demands. The result is not negotiable.');
         } else {
@@ -2279,14 +2341,17 @@
         const preset = getPreset();
 
         // Recovery: the player disengages to restore poise, ceding tempo.
-        if (moveKind === 'recover') {
+        // (Outcome-only has no poise to restore — a disengage is just another
+        // action with a verdict, so it falls through to a plain exchange.)
+        if (moveKind === 'recover' && !outcomeOnly()) {
             return resolveDuelRecovery(meta, circumstance);
         }
 
-        const openingBonus = duel.player.opening ? 1 : 0;
-        duel.player.opening = false;
-        const oppOpeningBonus = duel.opp.opening ? 1 : 0;
-        duel.opp.opening = false;
+        const style = outcomeOnly();
+        const openingBonus = (!style && duel.player.opening) ? 1 : 0;
+        if (!style) duel.player.opening = false;
+        const oppOpeningBonus = (!style && duel.opp.opening) ? 1 : 0;
+        if (!style) duel.opp.opening = false;
 
         const effP = duel.player.rating - duel.player.injuries + duel.player.momentum + openingBonus;
         const effO = duel.opp.rating - duel.opp.injuries + duel.opp.momentum + oppOpeningBonus;
@@ -2297,6 +2362,12 @@
         const u = rngFloat();
         const tier = tieCheck(sliceOutcome(P, u, preset.mods), P, u, getSettings().tieBand);
 
+        if (style) {
+            // Outcome-only: the verdict IS the whole result. No poise damage,
+            // no forced injuries, no momentum, no engine-declared end.
+            duel.round += 1;
+            return { aR: effP, oR: effO, oppLabel: duel.opp.name, delta, P, u, tier, opening: false, outcome: true };
+        }
         const applied = applyExchangeEffects(duel.player, duel.opp, tier, delta);
         duel.player = Object.assign({ name: duel.player.name, rating: duel.player.rating, maxPoise: duel.player.maxPoise }, applied.player);
         duel.opp = Object.assign({ name: duel.opp.name, rating: duel.opp.rating, maxPoise: duel.opp.maxPoise }, applied.opp);
@@ -2319,8 +2390,9 @@
         const duel = meta.duel;
         const preset = getPreset();
         const s = getSettings();
-        const openingBonus = duel.player.opening ? 1 : 0; duel.player.opening = false;
-        const oppOpeningBonus = duel.opp.opening ? 1 : 0; duel.opp.opening = false;
+        const style = outcomeOnly();
+        const openingBonus = (!style && duel.player.opening) ? 1 : 0; if (!style) duel.player.opening = false;
+        const oppOpeningBonus = (!style && duel.opp.opening) ? 1 : 0; if (!style) duel.opp.opening = false;
         const compPen = composurePenalty(meta);
         const oppCompPen = combatantComposurePenalty(duel.opp);
         const effO = duel.opp.rating - duel.opp.injuries + duel.opp.momentum + oppOpeningBonus;
@@ -2347,6 +2419,10 @@
         const overall = frac >= 0.5 ? 'DECISIVE' : frac > 0 ? 'SUCCESS' : frac === 0 ? 'TRADE' : frac > -0.5 ? 'FAILURE' : 'DISASTER';
         const avgCirc = seq.reduce((t, x) => t + x.circumstance, 0) / n;
         const margin = clamp((duel.player.rating - duel.player.injuries + duel.player.momentum) - effO + avgCirc + (duel.scaleMismatch || 0) + compPen - oppCompPen + preset.bonus, -13, 13);
+        if (style) {
+            duel.round += 1;
+            return { steps, overall, tier: overall, aR: duel.player.rating, oR: effO, delta: margin, P: probFromDelta(margin), u: lastU, combo: true, over: false, victor: null, outcome: true };
+        }
         const applied = applyExchangeEffects(duel.player, duel.opp, overall, margin);
         duel.player = Object.assign({ name: duel.player.name, rating: duel.player.rating, maxPoise: duel.player.maxPoise }, applied.player);
         duel.opp = Object.assign({ name: duel.opp.name, rating: duel.opp.rating, maxPoise: duel.opp.maxPoise }, applied.opp);
@@ -2364,9 +2440,11 @@
             'Narrate the combo strike by strike, IN ORDER, honoring each result exactly:',
             strikeLines,
             'Taken together the exchange is a ' + ov.name + ' — ' + ov.text,
-            sideStatus(duel.opp) + '. ' + sideStatus(duel.player) + '.',
         ];
-        if (duel.over) {
+        if (!res.outcome) lines.push(sideStatus(duel.opp) + '. ' + sideStatus(duel.player) + '.');
+        if (res.outcome) {
+            lines.push('Outcome-only duel: no scores are kept — each exchange stands on its own verdict, and consequences persist only as the fiction carries them. The duel continues until the STORY ends it: when the accumulated outcomes make a yield, flight, interruption, or finish the honest next beat, narrate that ending yourself. Arbiter will not call a winner.');
+        } else if (duel.over) {
             lines.push(res.victor === 'player'
                 ? duel.opp.name + ' is beaten — narrate the finish the fiction demands (downed, disarmed, dropped). Not negotiable.'
                 : duel.player.name + ' is beaten — narrate how ' + duel.opp.name + ' turns the failed combo into the finish. Not negotiable.');
@@ -2421,10 +2499,13 @@
             'Exchange result: ' + t.name + ' — ' + t.text,
         ];
         if (res.opening) lines.push('(' + duel.player.name + ' is exploiting the opening from the previous exchange.)');
-        if (fx.injureOpp) lines.push('Inflict a concrete lasting injury on ' + duel.opp.name + ' and name it in the prose; it visibly weakens them from now on.');
-        if (fx.injureSelf) lines.push('Inflict a concrete lasting injury on ' + duel.player.name + ' and name it in the prose; it visibly weakens them from now on.');
-        if (res.tier === 'SETBACK') lines.push(duel.player.name + ' loses this exchange but spots a real opening to exploit next round — show it.');
-        if (duel.over) {
+        if (!res.outcome && fx.injureOpp) lines.push('Inflict a concrete lasting injury on ' + duel.opp.name + ' and name it in the prose; it visibly weakens them from now on.');
+        if (!res.outcome && fx.injureSelf) lines.push('Inflict a concrete lasting injury on ' + duel.player.name + ' and name it in the prose; it visibly weakens them from now on.');
+        if (!res.outcome && res.tier === 'SETBACK') lines.push(duel.player.name + ' loses this exchange but spots a real opening to exploit next round — show it.');
+        if (res.outcome) {
+            lines.push('Outcome-only duel: no scores are kept — each exchange stands on its own verdict, and consequences persist only as the fiction carries them.');
+            lines.push('The duel continues until the STORY ends it: when the accumulated outcomes make a yield, flight, interruption, or finish the honest next beat, narrate that ending yourself. Arbiter will not call a winner.');
+        } else if (duel.over) {
             const winner = duel.victor === 'player' ? duel.player : duel.opp;
             const loser = duel.victor === 'player' ? duel.opp : duel.player;
             lines.push('DECISIVE POSITION: ' + loser.name + ' is beaten — ' + winner.name + ' has won this duel. Narrate the resolution the fiction demands (yield, knockout, disarm, retreat, or kill, per the story\'s tone). The result itself is not negotiable; the loser cannot rally.');
@@ -3690,8 +3771,13 @@
             <option value="realistic">realistic</option>
             <option value="heroic">heroic</option>
           </select>
+          <label>Fights</label>
+          <select id="arb_fightstyle" class="text_pole">
+            <option value="tracked">tracked</option>
+            <option value="outcome">outcome-only</option>
+          </select>
         </div>
-        <div class="arb_hint">Adjudicated = referee micro-call per check (accurate). Fast = zero-latency pre-rolled pool, storyteller picks the footing (weaker). Preset: gritty = harsher tails · realistic = neutral curve · heroic = +1 player edge, halved disasters.</div>
+        <div class="arb_hint">Adjudicated = referee micro-call per check (accurate). Fast = zero-latency pre-rolled pool, storyteller picks the footing (weaker). Preset: gritty = harsher tails · realistic = neutral curve · heroic = +1 player edge, halved disasters. Fights: tracked = poise, forced injuries and a called winner · outcome-only = every exchange still gets its full verdict (DECISIVE…DISASTER at fair odds), but nothing is tallied — no health, no engine-declared end; the STORYTELLER decides when the fight concludes (the referee still closes it once the fiction clearly ends it, and /duelend, /battleend and the HUD ✕ always work).</div>
         <div class="arb_row">
           <label>Tie window</label><input id="arb_tieband" type="number" min="0" max="0.2" step="0.01" class="text_pole arb_num">
         </div>
@@ -3920,10 +4006,10 @@
         return 'lo';
     }
 
-    function combatantCell(side, sideCls) {
+    function combatantCell(side, sideCls, bare) {
         const pct = Math.max(0, Math.min(100, Math.round((Math.max(0, side.poise) / side.maxPoise) * 100)));
         const initial = escHtml((side.name || '?').trim().charAt(0).toUpperCase() || '?');
-        const glyphs =
+        const glyphs = bare ? '' :
             (side.momentum > 0 ? '<span class="arb_g arb_g_mom" title="momentum">▲</span>' : '') +
             (side.injuries > 0 ? '<span class="arb_g arb_g_inj" title="' + side.injuries + ' injury">✚' + (side.injuries > 1 ? side.injuries : '') + '</span>' : '') +
             (side.opening ? '<span class="arb_g arb_g_open" title="opening">◹</span>' : '');
@@ -3933,8 +4019,8 @@
               '<div class="arb_disc ' + sideCls + '">' + initial + '</div>' +
               '<div class="arb_cellmain">' +
                 '<div class="arb_cellrow"><span class="arb_cname">' + escHtml(side.name) + '</span>' + glyphs +
-                  '<span class="arb_cnum">' + (Math.round(Math.max(0, side.poise) * 10) / 10) + '<span class="arb_cmax">/' + side.maxPoise + '</span></span></div>' +
-                '<div class="arb_track"><div class="arb_fill ' + poiseTone(pct) + low + '" style="width:' + pct + '%"></div></div>' +
+                  (bare ? '' : '<span class="arb_cnum">' + (Math.round(Math.max(0, side.poise) * 10) / 10) + '<span class="arb_cmax">/' + side.maxPoise + '</span></span>') + '</div>' +
+                (bare ? '' : '<div class="arb_track"><div class="arb_fill ' + poiseTone(pct) + low + '" style="width:' + pct + '%"></div></div>') +
               '</div>' +
             '</div>';
     }
@@ -4029,6 +4115,7 @@
                 el.id = 'arb_hud';
                 document.body.appendChild(el);
             }
+            const oStyle = s.fightStyle === 'outcome';
             if (battle && battle.active) {
                 const mc = battle.allies.find(u => u.isPlayer) || battle.allies[0];
                 const sideAgg = (units) => {
@@ -4051,31 +4138,31 @@
                 const badge = battle.over
                     ? '<div class="arb_badge_over">' + (battle.victor === 'allies' ? (battle.kind === 'war' ? 'FIELD TAKEN' : 'ALLIES WIN') : (battle.kind === 'war' ? 'LINE BROKEN' : 'ENEMIES WIN')) + '</div>'
                     : '<div class="arb_rbadge">' + warTag + 'R' + battle.round + '</div>';
-                const counts = '<div class="arb_counts">' + A.up + '/' + A.total + ' vs ' + E.up + '/' + E.total + '</div>';
+                const counts = '<div class="arb_counts">' + (oStyle ? 'outcome-only · ' : '') + A.up + '/' + A.total + ' vs ' + E.up + '/' + E.total + '</div>';
                 setHudHtml(el,
                     '<div class="arb_hud_inner">' +
                       '<div class="arb_hud_top">' + badge + counts +
                         '<span class="arb_hud_x" title="End battle">✕</span></div>' +
                       '<div class="arb_hud_body">' +
-                        combatantCell(aCell, 'pl') +
+                        combatantCell(aCell, 'pl', oStyle) +
                         '<div class="arb_vs">VS</div>' +
-                        combatantCell(eCell, 'op') +
+                        combatantCell(eCell, 'op', oStyle) +
                       '</div>' +
-                      '<div class="arb_mc">' + escHtml(mc.name) + ' · ' + (Math.round(Math.max(0, mc.poise) * 10) / 10) + '/' + mc.maxPoise + (mc.injuries ? ' ✚' + mc.injuries : '') + ((battle.kind === 'war' && battle.conditions && battle.conditions.length) ? ' · ⚑' + battle.conditions.length : '') + '</div>' +
+                      '<div class="arb_mc">' + escHtml(mc.name) + (oStyle ? '' : ' · ' + (Math.round(Math.max(0, mc.poise) * 10) / 10) + '/' + mc.maxPoise + (mc.injuries ? ' ✚' + mc.injuries : '') + ((battle.kind === 'war' && battle.conditions && battle.conditions.length) ? ' · ⚑' + battle.conditions.length : '')) + '</div>' +
                     '</div>');
                 return;
             }
             const badge = duel.over
                 ? '<div class="arb_badge_over">' + (duel.victor === 'draw' ? 'DRAW — BOTH DOWN' : escHtml((duel.victor === 'player' ? duel.player.name : duel.opp.name)) + ' WINS') + '</div>'
-                : '<div class="arb_rbadge">R' + duel.round + '</div>';
+                : '<div class="arb_rbadge">R' + duel.round + '</div>' + (oStyle ? '<div class="arb_counts">outcome-only</div>' : '');
             setHudHtml(el,
                 '<div class="arb_hud_inner">' +
                   '<div class="arb_hud_top">' + badge +
                     '<span class="arb_hud_x" title="End duel">✕</span></div>' +
                   '<div class="arb_hud_body">' +
-                    combatantCell(duel.player, 'pl') +
+                    combatantCell(duel.player, 'pl', oStyle) +
                     '<div class="arb_vs">VS</div>' +
-                    combatantCell(duel.opp, 'op') +
+                    combatantCell(duel.opp, 'op', oStyle) +
                   '</div>' +
                 '</div>');
         } catch (e) { /* the HUD must never break anything */ }
@@ -4106,6 +4193,7 @@
         $('#arb_enctypes').val(s.encounterTypes);
         $('#arb_mode').val(s.mode);
         $('#arb_preset').val(s.preset);
+        $('#arb_fightstyle').val(s.fightStyle || 'tracked');
         $('#arb_autoduel').prop('checked', !!s.autoDuel);
         $('#arb_autobattle').prop('checked', !!s.autoBattle);
         $('#arb_autowar').prop('checked', !!s.autoWar);
@@ -4193,6 +4281,7 @@
 
         $('#arb_mode').val(s.mode).on('change', function () { s.mode = this.value; saveSettings(); renderStatus(); });
         $('#arb_preset').val(s.preset).on('change', function () { s.preset = this.value; saveSettings(); renderStatus(); });
+        $('#arb_fightstyle').val(s.fightStyle || 'tracked').on('change', function () { s.fightStyle = this.value === 'outcome' ? 'outcome' : 'tracked'; saveSettings(); renderHud(); });
         $('#arb_autoduel').prop('checked', !!s.autoDuel).on('change', function () { s.autoDuel = this.checked; saveSettings(); });
         $('#arb_showhud').prop('checked', !!s.showHud).on('change', function () { s.showHud = this.checked; saveSettings(); renderHud(); });
         $('#arb_showact').prop('checked', !!s.showActivity).on('change', function () { s.showActivity = this.checked; saveSettings(); renderActivity(); });
