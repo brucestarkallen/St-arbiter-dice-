@@ -22,7 +22,7 @@
     'use strict';
 
     const MODULE = 'arbiter';
-    const VERSION = '0.33.0';
+    const VERSION = '0.34.0';
     const INJECT_KEY = 'ARBITER_OUTCOME';
     const LOG = '[Arbiter]';
     // Committed-turn history depth: how many resolved player turns keep a
@@ -446,7 +446,7 @@
         wiActivateEntries, collectWorldInfoBlock, wiResolveBooks, wiViaEngine, backgroundTick,
         resolveDuelSequence, resolveDuelExchange, normalizeDuelAdj, buildDuelDirective, buildDuelSequenceDirective, buildDirective,
         startBattle, resolveBattleRound, buildBattleDirective, startWar, resolveWarRound, buildWarDirective, normalizeBattleAdj, normalizeWarAdj, normalizeAdj, startDuel,
-        resolveDuelRecovery, resolveAdj, shiftCombatantComposure, findActor, findActorExact, findActorKey, findActorKeySamePerson, applyConditionChange, liveCombatant, refreshLiveRating, mcName, mcAliases, isMcAlias, samePersonName, reconcilePlayerEntries, seedSheet, combatDomain, buildArmedDirective, restoreSnapshot, deepCopy, ratingFor, getDefaults: () => DEFAULTS, getLastAdj: () => LAST_ADJ,
+        resolveDuelRecovery, resolveAdj, shiftCombatantComposure, findActor, findActorExact, findActorKey, findActorKeySamePerson, applyConditionChange, liveCombatant, refreshLiveRating, mcName, mcAliases, isMcAlias, samePersonName, reconcilePlayerEntries, seedSheet, combatDomain, buildArmedDirective, guardLines, restoreSnapshot, deepCopy, ratingFor, getDefaults: () => DEFAULTS, getLastAdj: () => LAST_ADJ,
     };
 
     /* ------------------------------------------------------------------ */
@@ -911,6 +911,13 @@
     // the four prompts can never drift apart on this field's semantics.
     const COND_CHANGE_FIELD = '"condition_change": null | {"who": "<player or a named character>", "add": "<short lasting condition or piece of gear just established, e.g. broken left arm, poisoned, exhausted, OR a signature weapon/armor like masterwork blade, enchanted plate — or null>", "remove": "<a prior condition/gear the fiction just resolved (healed, lost, broken), or null>", "mod": <integer -4..3, effect while it lasts; afflictions negative (broken arm -2), good gear positive (fine sword +1, legendary weapon +2 or +3)>, "domain": "<optional: the ONE domain this affects, e.g. melee for a sword, ranged for a bow; omit for whole-body effects like a curse or exhaustion>", "gear": true|false}. Set the moment the story establishes/removes something PERSISTENT (lasts beyond this scene). Gear (weapons, armor, tools) sets gear:true so it is not stripped by healing. Leave null when nothing persistent changed.';
 
+    // Shared across ALL referee schemas so ESTABLISHED DEFENSES are judged
+    // identically in single checks, duels, battles, and wars — and so no brief
+    // can drift on their semantics.
+    const GUARD_FIELD = '"player_guard": null | "<an ACTIVE protection the player is MAINTAINING this beat, per the ESTABLISHED fiction — a total or partial defense the story has already defined (an untouchable barrier, a ward, intangibility, a shield-art, armor of the world\'s own rules). State it as a CONSTRAINT, e.g. Infinity holds: nothing physical reaches his body; only the sword\'s veil is lowered. Null when no such stated defense is up.>"';
+    const COUNTER_FIELD = '"counter_path": null | "<set ONLY with player_guard: the ONE honest way the opponent can still harm or truly pressure the player THIS beat despite that guard, rooted in the established fiction — e.g. the exposed blade can be seized; the ground under him can be shattered; the veil must widen the instant he commits, and that instant can be struck; he can be forced off the ledge; his output can be outlasted. If the guard genuinely forecloses every path this beat, use null — do NOT invent one to seem fair.>"';
+    const GUARD_RULE = '- player_guard / counter_path: read the ESTABLISHED fiction, not genre habit. When a maintained guard forecloses direct harm and you find NO honest counter_path, the opponent cannot land contact this beat — a bad result then means the player\'s OWN attempt failing (read, evaded, stopped), ground or tempo lost, or the guard strained, never an impossible touch. A real counter_path both licenses the opponent\'s side of the outcome AND is exactly what the narration must name. A guard the opponent has no answer to is also strong POSITIVE circumstance for the player\'s safety — though their own attack through or around it can still fail on its merits.';
+
     const ADJ_SYSTEM = [
         'You are Arbiter, an outcome adjudicator for a roleplay. Decide whether the player\'s latest action needs a resolution check, and if so, classify it. You NEVER decide success or failure — only the parameters. Output STRICT JSON only: one object, no markdown, no commentary.',
         '',
@@ -927,6 +934,8 @@
         ' "duel_start": null | "<opponent name — set this when combat against ONE named person truly OPENS: an actual attempted strike, lunge, shot, grapple, or power unleashed AT them (even if you expect it to be quick or one-sided), OR when both sides have clearly squared up to fight — blades drawn, stances taken, the duel accepted — though nothing has been swung yet. In the squared-up case set duel_start together with check=false: the duel arms, NOTHING is rolled, and the first real attempt becomes round 1. When in doubt between a single check and a duel for an actual attack on a person, prefer the duel.>",',
         ' "opponent_rating": null | <integer 0-10 — set ONLY when you also set duel_start or battle_start AND the opponent is NOT already in the sheet. Estimate combat capability from the scene and description. Scale (by effective threat, NOT species): 2 untrained, 4 trained, 5 competent professional, 6 veteran, 7 elite, 8 master, 9 legendary, 10 apex. This applies to ANY combatant — a person, beast, dragon, alien, machine, or monster — rated by how dangerous it actually is: a feral dog 3, a trained warhound 5, a dire beast 7, an ancient dragon or apex monster 9-10. When a creature is so far beyond human scale that raw skill barely matters, rate it 10 AND set scale_mismatch below.>",',
         ' "scale_mismatch": null | <integer -4..4 — set ONLY in combat where the two sides are CATEGORICALLY mismatched in size, mass, or power (a human vs a dragon, a footsoldier vs a war-mech, a child vs a bear). This is an ADDITIONAL swing on top of ratings, representing that skill alone cannot close the gap. From the PLAYER\'s perspective: strongly negative when the player is hopelessly outmatched by something vast (a normal human attacking a dragon head-on: -3 or -4), strongly positive when the player is the vast one crushing something tiny. 0 or null when both sides are roughly the same scale (human vs human, dragon vs dragon), even if their skill differs. An equalizer in the fiction — a dragon-slaying spear, a mech of their own, a weak point exposed — reduces the magnitude.>",',
+        ' ' + GUARD_FIELD + ',',
+        ' ' + COUNTER_FIELD + ',',
         ' "composure_change": null | <integer -3..3 — the mental toll or relief of THIS moment on the player. Negative when the player faces horror, terror, gruesome death, existential dread, betrayal, or crushing loss (a mild shock -1, witnessing atrocity -2, mind-shattering cosmic horror -3). Positive when the player finds safety, rest, reassurance, or a grounding victory (+1 to +2). 0 for ordinary moments. This is the FICTION\'s emotional weight, independent of any dice outcome. Judge from what happens to the player, not whether an action succeeds.>",',
         ' ' + COND_CHANGE_FIELD,
         ' "battle_start": null | {"allies": ["<name>", ...], "enemies": ["<name or generic squad like Guard x3>", ...]} — set this when combat begins against MULTIPLE opponents at once, OR when the player attacks/affects a GROUP (e.g. "sweep through the guards", "hit all of them"). If the opponents are unnamed, invent a fitting generic squad with a count (e.g. "Guard x3", "Bandit x4"). List allies EXCLUDING the player. This is for skirmish-scale group combat (a handful per side), NOT army-scale warfare.},',
@@ -945,6 +954,7 @@
         '- The opponent is WHOEVER the fiction says the player is fighting in <recent>/<action>. Use that name. If they are also on the sheet, use the sheet spelling; if not, still name them from the fiction and set opposition_kind "actor" (they will be rated as trained). NEVER substitute a different sheet name just because it is familiar — the scene\'s named opponent always wins over a sheet entry.',
         '- The opponent is NEVER the player. Do NOT use the player\'s name, or ANY part of it (their given name OR their family name/surname), as the opponent (in "opposition" or "duel_start"). The <player> block names the player; EVERY part of that name is the player. For example, if the player is "Alex Vance", then BOTH "Alex" and "Vance" are the player — the opponent is never either. Name the opponent by the opponent\'s OWN name as the scene uses it (their given name is fine); if you cannot find a name distinct from the player\'s, the action is probably a single check, not a duel.',
         '- opposition must be a PERSON or creature the player fights. Never use a place, academy, house, faction, or organization name as the opposition.',
+        GUARD_RULE,
     ].join('\n');
 
     // Arbiter's own injected directives can surface as messages in some setups;
@@ -1109,6 +1119,8 @@
             opponent_rating: (obj.opponent_rating === null || obj.opponent_rating === undefined) ? null : clamp(Math.round(Number(obj.opponent_rating)), 0, 10),
             condition_change: normalizeConditionChange(obj.condition_change),
             composure_change: (obj.composure_change === null || obj.composure_change === undefined) ? 0 : clamp(Math.round(Number(obj.composure_change)), -3, 3),
+            playerGuard: (typeof obj.player_guard === 'string' && obj.player_guard.trim()) ? obj.player_guard.trim().slice(0, 180) : null,
+            counterPath: (typeof obj.counter_path === 'string' && obj.counter_path.trim() && !/^(none|null|no path|nothing|n\/a)$/i.test(obj.counter_path.trim())) ? obj.counter_path.trim().slice(0, 200) : null,
             army_scale: (typeof obj.army_scale === 'string' && obj.army_scale.trim()) ? obj.army_scale.trim().slice(0, 80) : null,
         };
     }
@@ -1241,6 +1253,8 @@
         ' "target": "<standing enemy name from the roster, or null>",',
         ' "action": "<the move, 3-10 words>",',
         ' "circumstance": <integer -3..3>,',
+        ' ' + GUARD_FIELD + ',',
+        ' ' + COUNTER_FIELD + ',',
         ' "why": "<one short clause>",',
         ' ' + COND_CHANGE_FIELD,
         ' "combat_ended": true|false}',
@@ -1252,6 +1266,7 @@
         '- circumstance is PHYSICAL advantage only (position, momentum, feints that create real openings, exposure). NEVER penalize a move for being a foul, dirty, illegal, dishonorable, or against duel rules, and never mention sanctions or penalties — a dirty move that works (a low blow, a groin kick) is a POSITIVE circumstance. You judge what is effective, not what is permitted; the fiction owns the rules.',
         '- exchange=false ONLY when no side fights this beat: a standoff or parley, talk or readying before contact, out-of-character/directorial text, or a recap of what already happened. While the enemy presses, a passive turn is still a round.',
         '- circumstance rewards concrete tactics, terrain, exploited weaknesses (+); penalizes impairment, bad position, chaos (-). 0 if nothing notable.',
+        GUARD_RULE,
         '- combat_ended=true ONLY if the fiction has already clearly ended the battle (rout, surrender, separation, scene left combat).',
     ].join('\n');
 
@@ -1266,6 +1281,8 @@
             target: (typeof obj.target === 'string' && obj.target.trim()) ? obj.target.trim().slice(0, 60) : null,
             action: String(obj.action || 'the exchange').slice(0, 140),
             circumstance: clamp(Math.round(Number(obj.circumstance) || 0), -3, 3),
+            playerGuard: (typeof obj.player_guard === 'string' && obj.player_guard.trim()) ? obj.player_guard.trim().slice(0, 180) : null,
+            counterPath: (typeof obj.counter_path === 'string' && obj.counter_path.trim() && !/^(none|null|no path|nothing|n\/a)$/i.test(obj.counter_path.trim())) ? obj.counter_path.trim().slice(0, 200) : null,
             condition_change: normalizeConditionChange(obj.condition_change),
             why: String(obj.why || '').slice(0, 160),
         };
@@ -1494,10 +1511,11 @@
             } else {
                 lines.push(mc.name + '\'s move: ' + adj.action + '.');
                 lines.push('Their exchange: ' + t.name + ' — ' + t.text);
+                lines.push(...guardLines(adj, mc.name, 'The enemy', out.mcRes.tier));
             }
             const fx = out.outcome ? {} : (EXCHANGE_EFFECTS[out.mcRes.tier] || {});
             if (fx.injureOpp && !out.mcRes.command) lines.push('Inflict a concrete lasting injury on their opponent and name it.');
-            if (fx.injureSelf) lines.push('Inflict a concrete lasting injury on ' + mc.name + ' and name it; it visibly weakens them.');
+            if (fx.injureSelf && !(adj.playerGuard && !adj.counterPath)) lines.push('Inflict a concrete lasting injury on ' + mc.name + ' and name it; it visibly weakens them.');
         }
         const rep = out.reports.slice(0, 4);
         if (rep.length) lines.push('Elsewhere on the field (weave these in as fact): ' + rep.join(' '));
@@ -1545,6 +1563,8 @@
         ' "target_unit": "<enemy formation name from the roster, or null>",',
         ' "action": "<the order, 3-12 words>",',
         ' "circumstance": <integer -3..3>,',
+        ' ' + GUARD_FIELD + ',',
+        ' ' + COUNTER_FIELD + ',',
         ' "why": "<one short clause>",',
         ' ' + COND_CHANGE_FIELD,
         ' "combat_ended": true|false}',
@@ -1556,6 +1576,7 @@
         '- "personal": the commander personally sorties into the fight (a duelist-commander, an ace in their machine). Fill target_unit.',
         '- circumstance is the tactical soundness of THIS order given terrain, intel, enemy posture, timing, and prior conditions: a flank against an exposed side +2; a frontal charge uphill into prepared lines -2; 0 when unremarkable.',
         '- While the engagement is being fought, nearly every commander turn IS an order; hesitation is a maneuver at negative circumstance. exchange=false only when no side presses this beat: a parley or truce, night camp, out-of-character/directorial text, or a recap of what already happened.',
+        GUARD_RULE,
         '- combat_ended=true ONLY if the fiction has clearly ended the engagement (rout already narrated, surrender, retreat completed, relief arrived).',
     ].join('\n');
 
@@ -1573,6 +1594,8 @@
             target: pick(obj.target_unit),
             action: String(obj.action || 'the order').slice(0, 160),
             circumstance: clamp(Math.round(Number(obj.circumstance) || 0), -3, 3),
+            playerGuard: (typeof obj.player_guard === 'string' && obj.player_guard.trim()) ? obj.player_guard.trim().slice(0, 180) : null,
+            counterPath: (typeof obj.counter_path === 'string' && obj.counter_path.trim() && !/^(none|null|no path|nothing|n\/a)$/i.test(obj.counter_path.trim())) ? obj.counter_path.trim().slice(0, 200) : null,
             condition_change: normalizeConditionChange(obj.condition_change),
             why: String(obj.why || '').slice(0, 160),
         };
@@ -1793,6 +1816,7 @@
                 }
             } else if (out.focalRes.personal) {
                 lines.push(mc.name + ' personally engages ' + (out.target ? out.target.name : 'the enemy') + ': ' + t.name + ' — ' + t.text);
+                lines.push(...guardLines(adj, mc.name, out.target ? out.target.name : 'The enemy', out.focalRes.tier));
             } else {
                 lines.push((out.acting ? out.acting.name : 'The ordered formation') + ' executes against ' + (out.target ? out.target.name : 'the enemy') + ': ' + t.name + ' — ' + t.text);
                 if (out.target && !out.target.standing) lines.push(out.target.name + ' is broken and routs from the field.');
@@ -2221,6 +2245,8 @@
         ' "self_composure": <integer -2..2 — how THIS moment affects the PLAYER\'s nerve in the fight: negative under terror or horror, positive on a grounding surge. 0 usually.>",',
         ' "action": "<the move, 3-10 words>",',
         ' "circumstance": <integer -3..3>,',
+        ' ' + GUARD_FIELD + ',',
+        ' ' + COUNTER_FIELD + ',',
         ' "sequence": null | [{"strike": "<short label, 2-6 words>", "circumstance": <integer -3..3>}],',
         ' "why": "<one short clause>",',
         ' ' + COND_CHANGE_FIELD,
@@ -2235,6 +2261,7 @@
         '- exchange=false ONLY when NEITHER side commits an attack this beat: a mutual standoff or measuring-up, talk/taunts/terms while circling, stance or readying without contact, declarations of what the player WILL or WON\'T do, out-of-character or directorial text (bracketed notes, "what would <character> do", intervention prompts), or a recap of what earlier narration already resolved. An exchange is a contested attempt committed in THIS message — or an opponent\'s attack the player must weather.',
         '- circumstance rewards concrete tactics, exploited weaknesses and openings (+); penalizes recklessness noted in the fiction, bad footing, impairment (-). 0 if nothing notable.',
         '- circumstance is TWO-SIDED and impartial: weigh what the OPPONENT is doing as much as the player. If the opponent has the better position, has set a trap, is pressing an advantage, or is simply the more dangerous fighter seizing control of the exchange, that is NEGATIVE circumstance for the player even when the player\'s own move is sound. Do not grade only the player\'s cleverness upward; a good move into a worse position still nets negative. Judge the exchange as a neutral observer would, not from the player\'s hopes.',
+        GUARD_RULE,
         '- combat_ended=true ONLY if the fiction has already clearly ended the fight (someone fled, yielded, was separated, or the scene left combat).',
         '- sequence: fill this ONLY when the player\'s single message is a genuine CHAIN of 2+ distinct offensive sub-actions meant to land in order (a combo — e.g. disrupt his spell, THEN a groin kick, THEN an elbow, THEN a neck punch). List each sub-action as its own strike with its own circumstance, judged on its OWN footing given what came before AND the opponent reacting between strikes. A combo is HIGH-RISK: do not assume every strike lands; a late strike is only as good as the setup that survived to it, and a bad strike hands the opponent the initiative. 2-5 strikes. Leave null for a single action — never invent a combo the player did not write, and still fill "action"/"circumstance" for the move as a whole.',
     ].join('\n');
@@ -2263,6 +2290,8 @@
             // damage to the opponent on a good roll (the fast-mode heal-attack
             // bug, reborn through the adjudicated path).
             sequence: (moveKind === 'attack' && rawSeq && rawSeq.length >= 2) ? rawSeq : null,
+            playerGuard: (typeof obj.player_guard === 'string' && obj.player_guard.trim()) ? obj.player_guard.trim().slice(0, 180) : null,
+            counterPath: (typeof obj.counter_path === 'string' && obj.counter_path.trim() && !/^(none|null|no path|nothing|n\/a)$/i.test(obj.counter_path.trim())) ? obj.counter_path.trim().slice(0, 200) : null,
             condition_change: normalizeConditionChange(obj.condition_change),
             why: String(obj.why || '').slice(0, 160),
         };
@@ -2490,6 +2519,7 @@
             strikeLines,
             'Taken together the exchange is a ' + ov.name + ' — ' + ov.text,
         ];
+        lines.splice(3, 0, ...guardLines(adj, duel.player.name, duel.opp.name, res.overall));
         if (!res.outcome) lines.push(sideStatus(duel.opp) + '. ' + sideStatus(duel.player) + '.');
         if (res.outcome) {
             lines.push('Outcome-only duel: no scores are kept — each exchange stands on its own verdict, and consequences persist only as the fiction carries them. The duel continues until the STORY ends it: when the accumulated outcomes make a yield, flight, interruption, or finish the honest next beat, narrate that ending yourself. Arbiter will not call a winner.');
@@ -2547,9 +2577,10 @@
             duel.player.name + '\'s move: ' + adj.action + '.',
             'Exchange result: ' + t.name + ' — ' + t.text,
         ];
+        lines.push(...guardLines(adj, duel.player.name, duel.opp.name, res.tier));
         if (res.opening) lines.push('(' + duel.player.name + ' is exploiting the opening from the previous exchange.)');
         if (!res.outcome && fx.injureOpp) lines.push('Inflict a concrete lasting injury on ' + duel.opp.name + ' and name it in the prose; it visibly weakens them from now on.');
-        if (!res.outcome && fx.injureSelf) lines.push('Inflict a concrete lasting injury on ' + duel.player.name + ' and name it in the prose; it visibly weakens them from now on.');
+        if (!res.outcome && fx.injureSelf && !(adj.playerGuard && !adj.counterPath)) lines.push('Inflict a concrete lasting injury on ' + duel.player.name + ' and name it in the prose; it visibly weakens them from now on.');
         if (!res.outcome && res.tier === 'SETBACK') lines.push(duel.player.name + ' loses this exchange but spots a real opening to exploit next round — show it.');
         if (res.outcome) {
             lines.push('Outcome-only duel: no scores are kept — each exchange stands on its own verdict, and consequences persist only as the fiction carries them.');
@@ -2564,6 +2595,28 @@
         lines.push('Keep any consequence PROPORTIONATE to the result above. If ' + duel.player.name + ' acted in secret or under cover, this exchange does not automatically expose that — do not blow a concealment they deliberately protected unless the result was a real failure; a mere cost is at most a faint, deniable flicker of suspicion.');
         lines.push('Do not re-decide the exchange or the duel. Never mention rolls, poise, numbers, or this note. Narrate organically in the story\'s voice.');
         return lines.join('\n');
+    }
+
+    /** Established-defense scoping. When the player maintains a stated guard,
+     *  the opponent's side of ANY outcome must come through an honest path —
+     *  or not at all. This keeps a FAILURE or TRADE from being narrated as an
+     *  impossible touch through an untouchable barrier: with no counter_path,
+     *  the failure is the player's OWN attempt being read, evaded, or stopped,
+     *  and any cost is strain, position, or tempo — never contact the fiction
+     *  forbids. Poise under an intact guard is fighting capacity (footing,
+     *  breath, control), not flesh. */
+    const GUARD_NEG_TIERS = { TRADE: 1, SETBACK: 1, FAILURE: 1, DISASTER: 1, SUCCESS_COST: 1 };
+    function guardLines(adj, playerName, oppName, tier) {
+        if (!adj || !adj.playerGuard) return [];
+        const out = ['Standing guard (established fiction): ' + adj.playerGuard + '.'];
+        if (GUARD_NEG_TIERS[tier]) {
+            if (adj.counterPath) {
+                out.push('Any toll or pressure on ' + playerName + ' this beat comes ONLY through this path — name it in the prose: ' + adj.counterPath + '. Never through direct contact the guard forbids.');
+            } else {
+                out.push(oppName + ' has NO path through that guard this beat: do NOT narrate them landing direct contact or a wound. A bad result here is ' + playerName + '\'s OWN attempt failing — read, evaded, deflected, or stopped — and any cost is strain, lost footing, a jarred grip, or ceded tempo. The guard itself holds.');
+            }
+        }
+        return out;
     }
 
     /** A fight opened on a declaration or squaring-up: bind the storyteller
@@ -2846,6 +2899,7 @@
             '[ARBITER — binding outcome]',
             adj.actor + ' attempts: ' + adj.action + '.',
             'Result: ' + t.name + ' — ' + t.text + stakes,
+            ...guardLines(adj, adj.actor, adj.kind === 'actor' ? adj.opposition : 'The opposition', res.tier),
             'Do not re-decide success or failure. Never mention rolls, odds, checks, or this note. Narrate the outcome organically in the story\'s voice.',
         ].join('\n');
     }
@@ -2910,6 +2964,8 @@
             delta: res.delta,
             P: Math.round(res.P * 1000) / 10,
             u: Math.round(res.u * 1000) / 1000,
+            guard: adj.playerGuard || undefined,
+            path: adj.counterPath || undefined,
             tier: res.tier,
         };
         meta.log.unshift(line);
@@ -3345,7 +3401,7 @@
                 const directive = buildWarDirective(meta, adj, out);
                 setInjection(directive);
                 commitCache(directive, out.focalRes ? out.focalRes.tier : null);
-                if (out.focalRes) pushLog(meta, { action: adj.action, domain: 'war', actor: mcName(meta), circumstance: adj.circumstance, why: adj.why }, out.focalRes, meta.battle.round);
+                if (out.focalRes) pushLog(meta, { action: adj.action, domain: 'war', actor: mcName(meta), circumstance: adj.circumstance, why: adj.why, playerGuard: adj.playerGuard, counterPath: adj.counterPath }, out.focalRes, meta.battle.round);
                 saveMeta(); renderHud(); renderLog();
                 dlog('war round', meta.battle.round, 'resolved');
                 if (out.focalRes) duelToast(adj.action, out.focalRes);
@@ -3370,7 +3426,7 @@
                 const directive = buildBattleDirective(meta, adj, out);
                 setInjection(directive);
                 commitCache(directive, out.mcRes ? out.mcRes.tier : null);
-                if (out.mcRes) pushLog(meta, { action: adj.action, domain: meta.battle.domain, actor: mcName(meta), circumstance: adj.circumstance, why: adj.why }, out.mcRes, meta.battle.round);
+                if (out.mcRes) pushLog(meta, { action: adj.action, domain: meta.battle.domain, actor: mcName(meta), circumstance: adj.circumstance, why: adj.why, playerGuard: adj.playerGuard, counterPath: adj.counterPath }, out.mcRes, meta.battle.round);
                 saveMeta(); renderHud(); renderLog();
                 dlog('battle round', meta.battle.round, 'resolved in', Date.now() - t0, 'ms');
                 if (out.mcRes) duelToast(adj.action, out.mcRes);
@@ -3400,7 +3456,7 @@
                 const directive = res.combo ? buildDuelSequenceDirective(meta, adj, res) : buildDuelDirective(meta, adj, res);
                 setInjection(directive);
                 commitCache(directive, res.tier);
-                pushLog(meta, { action: adj.action, domain: meta.duel.domain, actor: meta.duel.player.name, circumstance: adj.circumstance, why: adj.why }, res, meta.duel.round);
+                pushLog(meta, { action: adj.action, domain: meta.duel.domain, actor: meta.duel.player.name, circumstance: adj.circumstance, why: adj.why, playerGuard: adj.playerGuard, counterPath: adj.counterPath }, res, meta.duel.round);
                 saveMeta(); renderHud(); renderLog();
                 dlog('duel round', meta.duel.round, 'resolved in', Date.now() - t0, 'ms →', res.tier);
                 duelToast(adj.action, res);
@@ -4094,7 +4150,8 @@
             return '<div class="arb_log_entry"><span class="arb_badge arb_t_' + escHtml(l.tier) + '">' +
                 escHtml(t.name) + '</span>' + (l.r ? '[R' + escHtml(String(l.r)) + '] ' : '') + escHtml(l.actor + ': ' + l.action) +
                 '<br><small>' + escHtml((TIER_MEANING[l.tier] ? TIER_MEANING[l.tier] + ' · ' : '') + l.domain + ' vs ' + l.opp + ' · ' + mathLine(l)) +
-                (l.why ? ' · ' + escHtml(l.why) : '') + '</small></div>';
+                (l.why ? ' · ' + escHtml(l.why) : '') +
+                (l.guard ? '<br>' + escHtml('⛨ ' + l.guard + (l.path ? ' — path: ' + l.path : ' — no counter path: the guard held')) : '') + '</small></div>';
         });
         el.html(rows.join(''));
     }

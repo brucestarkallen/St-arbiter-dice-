@@ -44,7 +44,7 @@ Under the hood it's rigorously fair: exchange damage is exactly symmetric (no hi
 tilt toward the player), the referee only ever sees a neutral prompt (never your
 persona or the card's "unbeatable protagonist" framing), and the injected verdict is
 purely qualitative — it never leaks a die, a probability, or a stat to the
-storyteller. The whole engine is covered by 53 regression suites that freeze those
+storyteller. The whole engine is covered by 54 regression suites that freeze those
 fairness, stability, and no-spoiler guarantees; see the audit notes further down.
 
 ## How it works
@@ -861,6 +861,36 @@ TRADE = "both land real hits — mutual damage", SETBACK = "fails, but
 forward — the loss opens a real next move", and so on. A bare tier name is
 never a mystery.
 
+## Established defenses — guards and counter-paths
+
+When your character maintains a stated defense — an untouchable barrier
+(Infinity), a ward, intangibility, a shield-art — the referee now records
+it as a **guard**, stated as a constraint ("Infinity holds: nothing
+physical reaches his body; only the sword's veil is lowered"), and must
+name the ONE honest **counter-path** the opponent has through it this beat
+(the exposed blade can be seized; the ground can be shattered; the veil
+must widen the instant he commits) — or record that there is **none**,
+never inventing one "to seem fair".
+
+Every verdict is then **scoped by the guard** in the directive the
+storyteller receives:
+
+- With a real counter-path, any toll on you comes **only through that
+  named path** — the "how" is in the prose, never an unexplained touch.
+- With no path, the opponent **cannot land contact**: a FAILURE or TRADE
+  means *your own attempt* was read, evaded, or stopped, and any cost is
+  strain, footing, or tempo — the guard itself holds. Forced-injury
+  commands are suppressed; poise under an intact guard is fighting
+  capacity, not flesh.
+- An unanswered guard is also strong positive circumstance for your
+  safety — while your own attack through the narrowed gap can still fail
+  on its merits, which is the honest reading of a FAILURE there.
+
+The adjudication log shows the guard on every entry (⛨ line, with the
+path or "no counter path: the guard held"), so a bare verdict always
+carries its in-fiction reasoning. Works identically in single checks,
+duels, battles, and war personal engagements, for ANY power system.
+
 ## Fight styles — tracked vs outcome-only
 
 **Outcome feel → Fights** picks how combat resolves:
@@ -906,12 +936,13 @@ where the two match behave exactly as before.
 
 ## Tests
 
-`tests/` contains 53 suites covering every invariant: the probability
+`tests/` contains 54 suites covering every invariant: the probability
 curve, tier slicing per preset, exchange effects, full battles to
 conclusion, snapshot rewinds, event tiers, thread ladders, memory-collector
 coverage, gate behavior, player identity (story name vs persona label),
 the outcome-only fight style (verdicts without health or an engine-called
-end), and fight-or-not intelligence (declarations arm, attempts roll).
+end), fight-or-not intelligence (declarations arm, attempts roll), and
+established-defense guards (verdicts scoped by the fiction's own rules).
 Run them with Node (no dependencies):
 `sh tests/run_all.sh`. Any future change should keep them green.
 
