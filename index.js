@@ -22,7 +22,7 @@
     'use strict';
 
     const MODULE = 'arbiter';
-    const VERSION = '0.32.0';
+    const VERSION = '0.33.0';
     const INJECT_KEY = 'ARBITER_OUTCOME';
     const LOG = '[Arbiter]';
     // Committed-turn history depth: how many resolved player turns keep a
@@ -446,7 +446,7 @@
         wiActivateEntries, collectWorldInfoBlock, wiResolveBooks, wiViaEngine, backgroundTick,
         resolveDuelSequence, resolveDuelExchange, normalizeDuelAdj, buildDuelDirective, buildDuelSequenceDirective, buildDirective,
         startBattle, resolveBattleRound, buildBattleDirective, startWar, resolveWarRound, buildWarDirective, normalizeBattleAdj, normalizeWarAdj, normalizeAdj, startDuel,
-        resolveDuelRecovery, resolveAdj, shiftCombatantComposure, findActor, findActorExact, findActorKey, findActorKeySamePerson, applyConditionChange, liveCombatant, refreshLiveRating, mcName, mcAliases, isMcAlias, samePersonName, reconcilePlayerEntries, seedSheet, restoreSnapshot, deepCopy, ratingFor, getDefaults: () => DEFAULTS, getLastAdj: () => LAST_ADJ,
+        resolveDuelRecovery, resolveAdj, shiftCombatantComposure, findActor, findActorExact, findActorKey, findActorKeySamePerson, applyConditionChange, liveCombatant, refreshLiveRating, mcName, mcAliases, isMcAlias, samePersonName, reconcilePlayerEntries, seedSheet, combatDomain, buildArmedDirective, restoreSnapshot, deepCopy, ratingFor, getDefaults: () => DEFAULTS, getLastAdj: () => LAST_ADJ,
     };
 
     /* ------------------------------------------------------------------ */
@@ -544,6 +544,28 @@
      *  storyteller's fiction ends it (the referee's combat_ended detection
      *  and the manual controls still close it). */
     function outcomeOnly() { return getSettings().fightStyle === 'outcome'; }
+
+    /** One-line plain meaning per verdict, for the log and toasts — so a
+     *  bare tier name is never a mystery. Directives carry the full text. */
+    const TIER_MEANING = {
+        DECISIVE: 'clean success — better than intended',
+        SUCCESS: 'succeeds as intended',
+        SUCCESS_COST: 'succeeds, but with a proportionate cost',
+        TRADE: 'both land real hits — mutual damage',
+        STALEMATE: 'neither side gains — the exchange resolves nothing',
+        SETBACK: 'fails, but forward — the loss opens a real next move',
+        FAILURE: 'fails as attempted',
+        DISASTER: 'fails badly — it backfires',
+        ARMED: 'fight joined — nothing rolled yet',
+    };
+
+    /** A duel is FOUGHT in a combat domain. An opener the referee classified
+     *  as talk (a taunt scored 'social') must never arm a social duel — the
+     *  fight's weapons decide the domain, defaulting to melee. */
+    function combatDomain(d) {
+        const x = String(d || '').toLowerCase().trim();
+        return (!x || x === 'social' || x === 'intellect' || x === 'craft' || x === 'stealth') ? 'melee' : x;
+    }
 
     function getMeta() {
         const c = ctx();
@@ -902,7 +924,7 @@
         ' "circumstance": <integer -3..3>,',
         ' "why": "<one short clause justifying circumstance>",',
         ' "stakes": "<what success or failure means here, one short clause>",',
-        ' "duel_start": null | "<opponent name — set this whenever the action opens physical combat against ONE named person: a strike, a draw, a lunge, an attack with a weapon or power, even if you expect it to be quick or one-sided. When in doubt between a single check and a duel for an attack on a person, prefer the duel.>",',
+        ' "duel_start": null | "<opponent name — set this when combat against ONE named person truly OPENS: an actual attempted strike, lunge, shot, grapple, or power unleashed AT them (even if you expect it to be quick or one-sided), OR when both sides have clearly squared up to fight — blades drawn, stances taken, the duel accepted — though nothing has been swung yet. In the squared-up case set duel_start together with check=false: the duel arms, NOTHING is rolled, and the first real attempt becomes round 1. When in doubt between a single check and a duel for an actual attack on a person, prefer the duel.>",',
         ' "opponent_rating": null | <integer 0-10 — set ONLY when you also set duel_start or battle_start AND the opponent is NOT already in the sheet. Estimate combat capability from the scene and description. Scale (by effective threat, NOT species): 2 untrained, 4 trained, 5 competent professional, 6 veteran, 7 elite, 8 master, 9 legendary, 10 apex. This applies to ANY combatant — a person, beast, dragon, alien, machine, or monster — rated by how dangerous it actually is: a feral dog 3, a trained warhound 5, a dire beast 7, an ancient dragon or apex monster 9-10. When a creature is so far beyond human scale that raw skill barely matters, rate it 10 AND set scale_mismatch below.>",',
         ' "scale_mismatch": null | <integer -4..4 — set ONLY in combat where the two sides are CATEGORICALLY mismatched in size, mass, or power (a human vs a dragon, a footsoldier vs a war-mech, a child vs a bear). This is an ADDITIONAL swing on top of ratings, representing that skill alone cannot close the gap. From the PLAYER\'s perspective: strongly negative when the player is hopelessly outmatched by something vast (a normal human attacking a dragon head-on: -3 or -4), strongly positive when the player is the vast one crushing something tiny. 0 or null when both sides are roughly the same scale (human vs human, dragon vs dragon), even if their skill differs. An equalizer in the fiction — a dragon-slaying spear, a mech of their own, a weak point exposed — reduces the magnitude.>",',
         ' "composure_change": null | <integer -3..3 — the mental toll or relief of THIS moment on the player. Negative when the player faces horror, terror, gruesome death, existential dread, betrayal, or crushing loss (a mild shock -1, witnessing atrocity -2, mind-shattering cosmic horror -3). Positive when the player finds safety, rest, reassurance, or a grounding victory (+1 to +2). 0 for ordinary moments. This is the FICTION\'s emotional weight, independent of any dice outcome. Judge from what happens to the player, not whether an action succeeds.>",',
@@ -912,7 +934,12 @@
         ' "army_scale": null | "<short name for the larger conflict — set ONLY when the player is caught in mass warfare WITHOUT commanding it (a soldier or bystander in the melee); if they command, use war_start instead>"}',
         '',
         'Rules:',
-        '- check=false for dialogue, routine or trivial actions with no meaningful chance of interesting failure, pure narration, OOC talk, or actions attempted by characters other than the player.',
+        '- check=true ONLY when THIS message commits an attempt whose outcome is genuinely uncertain RIGHT NOW. A message that merely promises, prepares, discusses, or recalls an action attempts nothing — check=false.',
+        '- check=false for: dialogue, taunts, boasts, threats, banter, or negotiation — talk is talk, even mid-standoff and even with a blade drawn; routine or trivial actions with no meaningful chance of interesting failure; pure narration; actions attempted by characters other than the player.',
+        '- check=false for DECLARATIONS and INTENT: future tense and plans ("I will...", "I\'m going to...", "perhaps I\'ll be the third") and negations ("I\'m not going to use my full power") describe what MAY happen — nothing is attempted now.',
+        '- check=false for PREPARATION and POSTURE: drawing or sheathing a weapon, taking position, assuming a stance, sizing an opponent up, or powering up/readying an ability WITHOUT releasing it at anyone. These can still OPEN a fight — see duel_start.',
+        '- check=false for OUT-OF-CHARACTER or DIRECTORIAL text: bracketed notes, questions to the narrator, prompts like "what would <character> do", intervention windows, or instructions about the scene. These are never the player attempting anything.',
+        '- check=false for actions ALREADY RESOLVED: restating or recapping what earlier narration settled is not a new attempt — never re-roll what has already happened.',
         '- circumstance is PHYSICAL tactical advantage ONLY: position, momentum, surprise, preparation, exposure of the target, terrain, impairment, haste. Reward concrete tactics and exploited PHYSICAL weaknesses (+); penalize bad position, impairment, or haste (-). Use 0 when nothing notable applies.',
         '- NEVER penalize an action for being illegal, dishonorable, a foul, against duel etiquette, unsporting, or immoral, and never mention rules, sanctions, penalties, or disqualification. You do not know this world\'s rules; whether a move is "allowed" is the storyteller\'s to narrate, not yours to score. A dirty tactic that gives a real physical edge (a groin kick, sand in the eyes, a low blow) is a POSITIVE circumstance, not a negative one. Judge only what works, not what is permitted.',
         '- The opponent is WHOEVER the fiction says the player is fighting in <recent>/<action>. Use that name. If they are also on the sheet, use the sheet spelling; if not, still name them from the fiction and set opposition_kind "actor" (they will be rated as trained). NEVER substitute a different sheet name just because it is familiar — the scene\'s named opponent always wins over a sheet entry.',
@@ -974,7 +1001,29 @@
 
     function normalizeAdj(obj, meta) {
         if (!obj || typeof obj !== 'object') return null;
-        if (obj.check === false) return { check: false };
+        if (obj.check === false) {
+            // A fight can OPEN on a message that itself attempts nothing
+            // contested (squaring up, a declaration, drawing steel): the
+            // referee arms it with check=false and NOTHING is rolled — the
+            // first committed attempt becomes round 1. Self-hardening still
+            // applies: the player, under ANY alias, is never the foe.
+            const out = { check: false };
+            const ds = (typeof obj.duel_start === 'string' && obj.duel_start.trim()) ? obj.duel_start.trim().slice(0, 60) : null;
+            if (ds && !isMcAlias(meta, ds)) out.duel_start = ds;
+            let bs = normalizeRoster(obj.battle_start);
+            if (bs) {
+                bs.enemies = (bs.enemies || []).filter(nm => !isMcAlias(meta, nm));
+                if (bs.enemies.length) out.battle_start = bs;
+            }
+            const ws = normalizeWarStart(obj.war_start);
+            if (ws) out.war_start = ws;
+            out.domain = String(obj.domain || 'melee').toLowerCase().trim() || 'melee';
+            out.opponent_rating = (obj.opponent_rating === null || obj.opponent_rating === undefined) ? null : clamp(Math.round(Number(obj.opponent_rating)), 0, 10);
+            out.scale_mismatch = (obj.scale_mismatch === null || obj.scale_mismatch === undefined) ? 0 : clamp(Math.round(Number(obj.scale_mismatch)), -4, 4);
+            out.action = String(obj.action || 'squaring up').slice(0, 140);
+            out.actor = mcName(meta);
+            return out;
+        }
         if (obj.check !== true) return null;
         const domain = String(obj.domain || 'general').toLowerCase().trim() || 'general';
         // The actor is ALWAYS the player. Model discretion here caused an
@@ -1201,7 +1250,7 @@
         '- move_kind "fight": the player personally engages one enemy (use "target"). move_kind "command": the player directs the whole side — orders, tactics, formation, rallying.',
         '- In an active duel nearly every player turn IS an exchange — the enemy presses regardless. Passive or hesitant turns are exchanges with NEGATIVE circumstance.',
         '- circumstance is PHYSICAL advantage only (position, momentum, feints that create real openings, exposure). NEVER penalize a move for being a foul, dirty, illegal, dishonorable, or against duel rules, and never mention sanctions or penalties — a dirty move that works (a low blow, a groin kick) is a POSITIVE circumstance. You judge what is effective, not what is permitted; the fiction owns the rules.',
-        '- exchange=false only for a genuine lull with no fighting possible.',
+        '- exchange=false ONLY when no side fights this beat: a standoff or parley, talk or readying before contact, out-of-character/directorial text, or a recap of what already happened. While the enemy presses, a passive turn is still a round.',
         '- circumstance rewards concrete tactics, terrain, exploited weaknesses (+); penalizes impairment, bad position, chaos (-). 0 if nothing notable.',
         '- combat_ended=true ONLY if the fiction has already clearly ended the battle (rout, surrender, separation, scene left combat).',
     ].join('\n');
@@ -1506,7 +1555,7 @@
         '- "stratagem": the order reshapes the FIELD rather than one clash — burn the woods, feign retreat, poison the wells, cut supply, deception, weather/terrain exploitation. Leave units null.',
         '- "personal": the commander personally sorties into the fight (a duelist-commander, an ace in their machine). Fill target_unit.',
         '- circumstance is the tactical soundness of THIS order given terrain, intel, enemy posture, timing, and prior conditions: a flank against an exposed side +2; a frontal charge uphill into prepared lines -2; 0 when unremarkable.',
-        '- In an active engagement nearly every commander turn IS an order; hesitation is a maneuver at negative circumstance. exchange=false only for genuine lulls (parley, night camp).',
+        '- While the engagement is being fought, nearly every commander turn IS an order; hesitation is a maneuver at negative circumstance. exchange=false only when no side presses this beat: a parley or truce, night camp, out-of-character/directorial text, or a recap of what already happened.',
         '- combat_ended=true ONLY if the fiction has clearly ended the engagement (rout already narrated, surrender, retreat completed, relief arrived).',
     ].join('\n');
 
@@ -2181,9 +2230,9 @@
         '- condition_change: also available MID-FIGHT — set it when THIS exchange establishes or resolves something persistent on EITHER fighter (a lasting wound beyond the exchange, poison taking hold, a disarm, gear seized or broken). Null when nothing persistent changed.',
         '- move_kind "recover": the player DISENGAGES to restore themselves — healing magic on themselves, a water/life node, catching their breath, a defensive reset that regains composure, mending their own wounds. This regains poise but yields tempo (the opponent acts freely). Everything else is "attack" (including defensive counters that still contest the opponent).',
         '- For a "recover" move, circumstance reflects how SAFELY they can recover: unopposed with a reliable method +2; snatched under pressure with the enemy closing -2. Recovery never "fails into damage" — at worst it barely helps.',
-        '- In an active duel nearly every player turn IS an exchange — the opponent presses regardless. A passive, hesitant, or purely defensive turn is an exchange with NEGATIVE circumstance, not exchange=false.',
+        '- While the OPPONENT is actively attacking or pressing this beat, every player turn IS an exchange — words do not parry steel. A passive, hesitant, talking, or purely defensive turn UNDER ATTACK is an exchange with NEGATIVE circumstance, never exchange=false. The player cannot stall a pressing opponent by monologuing.',
         '- circumstance is PHYSICAL advantage ONLY: position, momentum, a feint that creates a real opening, an exposed target, terrain, impairment, haste. NEVER penalize a move for being a foul, dirty, illegal, dishonorable, unsporting, or against duel etiquette, and NEVER mention rules, sanctions, penalties, or disqualification — you do not know this world\'s rules, and legality is the storyteller\'s to narrate, not yours to score. A dirty move that gives a real physical edge (a groin kick, sand in the eyes, a sucker punch) is a POSITIVE circumstance. Judge only what is effective, never what is permitted.',
-        '- exchange=false only for a genuine lull: pure dialogue while circling, with no blows possible.',
+        '- exchange=false ONLY when NEITHER side commits an attack this beat: a mutual standoff or measuring-up, talk/taunts/terms while circling, stance or readying without contact, declarations of what the player WILL or WON\'T do, out-of-character or directorial text (bracketed notes, "what would <character> do", intervention prompts), or a recap of what earlier narration already resolved. An exchange is a contested attempt committed in THIS message — or an opponent\'s attack the player must weather.',
         '- circumstance rewards concrete tactics, exploited weaknesses and openings (+); penalizes recklessness noted in the fiction, bad footing, impairment (-). 0 if nothing notable.',
         '- circumstance is TWO-SIDED and impartial: weigh what the OPPONENT is doing as much as the player. If the opponent has the better position, has set a trap, is pressing an advantage, or is simply the more dangerous fighter seizing control of the exchange, that is NEGATIVE circumstance for the player even when the player\'s own move is sound. Do not grade only the player\'s cleverness upward; a good move into a worse position still nets negative. Judge the exchange as a neutral observer would, not from the player\'s hopes.',
         '- combat_ended=true ONLY if the fiction has already clearly ended the fight (someone fled, yielded, was separated, or the scene left combat).',
@@ -2515,6 +2564,22 @@
         lines.push('Keep any consequence PROPORTIONATE to the result above. If ' + duel.player.name + ' acted in secret or under cover, this exchange does not automatically expose that — do not blow a concealment they deliberately protected unless the result was a real failure; a mere cost is at most a faint, deniable flicker of suspicion.');
         lines.push('Do not re-decide the exchange or the duel. Never mention rolls, poise, numbers, or this note. Narrate organically in the story\'s voice.');
         return lines.join('\n');
+    }
+
+    /** A fight opened on a declaration or squaring-up: bind the storyteller
+     *  to the standoff WITHOUT any outcome — nothing was attempted, nothing
+     *  was rolled, and nothing may be resolved this turn. */
+    function buildArmedDirective(meta, adj) {
+        const duel = meta.duel;
+        const head = duel
+            ? '[ARBITER — duel joined: ' + duel.player.name + ' vs ' + duel.opp.name + ']'
+            : '[ARBITER — ' + (meta.battle && meta.battle.kind === 'war' ? 'war' : 'battle') + ' joined]';
+        return [
+            head,
+            'The fight has only been JOINED: ' + (adj.action || 'the squaring-up') + '. No blow has landed, nothing has succeeded or failed, and no outcome has been decided.',
+            'Narrate the standoff, the words, and the readying exactly as written — declarations, taunts, and drawn steel are not attacks, and neither side gains or loses anything yet.',
+            'The first committed attempt will be adjudicated as round 1. End on the brink, not past it. Never mention rolls, numbers, or this note. Narrate organically in the story\'s voice.',
+        ].join('\n');
     }
 
     /** Fast mode: zero-LLM pre-rolled pool, NE-P style (weaker: the model picks the footing). */
@@ -3138,7 +3203,7 @@
                 if (!s.toastResults) return;
                 const t = TIERS[res.tier] || {};
                 const rnd = inBattle ? meta.battle.round : (meta.duel ? meta.duel.round : 0);
-                toast('info', escHtml(adjAction) + (s.showMath ? '<br><small>' + escHtml('Δ=' + (res.delta >= 0 ? '+' : '') + res.delta + ' → P ' + Math.round(res.P * 100) + '% → u ' + (Math.round(res.u * 1000) / 1000)) + '</small>' : ''), 'R' + rnd + ' · ' + t.name);
+                toast('info', escHtml(adjAction) + '<br><small>' + escHtml(TIER_MEANING[res.tier] || t.text || '') + '</small>' + (s.showMath ? '<br><small>' + escHtml('Δ=' + (res.delta >= 0 ? '+' : '') + res.delta + ' → P ' + Math.round(res.P * 100) + '% → u ' + (Math.round(res.u * 1000) / 1000)) + '</small>' : ''), 'R' + rnd + ' · ' + t.name);
             };
 
             // ── FAST MODE: zero LLM calls, pre-rolled outcomes ──
@@ -3343,6 +3408,44 @@
             }
 
             if (adj.check === false) {
+                // Arm-only: combat opened on a declaration or squaring-up with
+                // no contested attempt. The fight arms, NOTHING is rolled, no
+                // log entry is written — the first real attempt is round 1.
+                if (adj.duel_start && !adj.battle_start && s.autoDuel) {
+                    if (s.autoSeed && !findActor(meta, adj.duel_start) && !autoSeedRunning) {
+                        autoSeedRunning = true;
+                        Promise.resolve(seedSheet({ auto: true })).finally(() => { autoSeedRunning = false; });
+                    }
+                    startDuel(meta, mcName(meta), adj.duel_start, combatDomain(adj.domain), adj.opponent_rating, adj.scale_mismatch);
+                    const directive = buildArmedDirective(meta, adj);
+                    setInjection(directive);
+                    commitCache(directive, 'ARMED');
+                    saveMeta(); renderHud();
+                    toast('info', escHtml(meta.duel.player.name + ' vs ' + meta.duel.opp.name + ' — squared up, nothing rolled. The first real attempt is round 1.'), 'DUEL JOINED');
+                    return;
+                }
+                if (adj.battle_start && s.autoBattle) {
+                    const started = startBattle(meta, adj.battle_start.allies, adj.battle_start.enemies, combatDomain(adj.domain), adj.scale_mismatch, adj.opponent_rating);
+                    if (started) {
+                        const directive = buildArmedDirective(meta, adj);
+                        setInjection(directive);
+                        commitCache(directive, 'ARMED');
+                        saveMeta(); renderHud();
+                        toast('info', escHtml(standing(meta.battle.allies).length + ' vs ' + standing(meta.battle.enemies).length + ' — battle joined, nothing rolled.'), 'BATTLE JOINED');
+                        return;
+                    }
+                }
+                if (adj.war_start && s.autoWar) {
+                    const started = startWar(meta, adj.war_start.allies, adj.war_start.enemies, adj.war_start.enemy_commander, adj.scale_mismatch);
+                    if (started) {
+                        const directive = buildArmedDirective(meta, adj);
+                        setInjection(directive);
+                        commitCache(directive, 'ARMED');
+                        saveMeta(); renderHud();
+                        toast('info', escHtml(standing(nonPlayer(meta.battle.allies)).length + ' formations vs ' + standing(meta.battle.enemies).length + ' — war joined, nothing rolled.'), 'WAR JOINED');
+                        return;
+                    }
+                }
                 dlog('adjudicator: no check needed');
                 commitCache('', null); // remember the "no check" verdict too
                 saveMeta();
@@ -3358,7 +3461,7 @@
                     autoSeedRunning = true;
                     Promise.resolve(seedSheet({ auto: true })).finally(() => { autoSeedRunning = false; });
                 }
-                startDuel(meta, adj.actor, adj.duel_start, adj.domain, adj.opponent_rating, adj.scale_mismatch);
+                startDuel(meta, adj.actor, adj.duel_start, combatDomain(adj.domain), adj.opponent_rating, adj.scale_mismatch);
                 const res = resolveDuelExchange(meta, adj.circumstance);
                 const directive = buildDuelDirective(meta, adj, res);
                 setInjection(directive);
@@ -3372,7 +3475,7 @@
             // Auto battle start: group combat begins — this attempt resolves
             // as round 1 of a fresh battle.
             if (adj.battle_start && s.autoBattle) {
-                const started = startBattle(meta, adj.battle_start.allies, adj.battle_start.enemies, adj.domain, adj.scale_mismatch, adj.opponent_rating);
+                const started = startBattle(meta, adj.battle_start.allies, adj.battle_start.enemies, combatDomain(adj.domain), adj.scale_mismatch, adj.opponent_rating);
                 if (started) {
                     const out = resolveBattleRound(meta, { kind: 'fight', target: null, action: adj.action, circumstance: adj.circumstance });
                     const directive = buildBattleDirective(meta, adj, out);
@@ -3448,7 +3551,7 @@
             dlog('resolved in', Date.now() - t0, 'ms:', mathLine(line), '→', res.tier);
             if (s.toastResults) {
                 const t = TIERS[res.tier];
-                toast('info', escHtml(adj.action) + (s.showMath ? '<br><small>' + escHtml(mathLine(line)) + '</small>' : ''), t.name);
+                toast('info', escHtml(adj.action) + '<br><small>' + escHtml(TIER_MEANING[res.tier] || t.text || '') + '</small>' + (s.showMath ? '<br><small>' + escHtml(mathLine(line)) + '</small>' : ''), t.name);
             }
             renderLog();
         } finally {
@@ -3990,7 +4093,7 @@
             const t = TIERS[l.tier] || { name: l.tier };
             return '<div class="arb_log_entry"><span class="arb_badge arb_t_' + escHtml(l.tier) + '">' +
                 escHtml(t.name) + '</span>' + (l.r ? '[R' + escHtml(String(l.r)) + '] ' : '') + escHtml(l.actor + ': ' + l.action) +
-                '<br><small>' + escHtml(l.domain + ' vs ' + l.opp + ' · ' + mathLine(l)) +
+                '<br><small>' + escHtml((TIER_MEANING[l.tier] ? TIER_MEANING[l.tier] + ' · ' : '') + l.domain + ' vs ' + l.opp + ' · ' + mathLine(l)) +
                 (l.why ? ' · ' + escHtml(l.why) : '') + '</small></div>';
         });
         el.html(rows.join(''));

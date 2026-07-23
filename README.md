@@ -44,7 +44,7 @@ Under the hood it's rigorously fair: exchange damage is exactly symmetric (no hi
 tilt toward the player), the referee only ever sees a neutral prompt (never your
 persona or the card's "unbeatable protagonist" framing), and the injected verdict is
 purely qualitative — it never leaks a die, a probability, or a stat to the
-storyteller. The whole engine is covered by 52 regression suites that freeze those
+storyteller. The whole engine is covered by 53 regression suites that freeze those
 fairness, stability, and no-spoiler guarantees; see the audit notes further down.
 
 ## How it works
@@ -829,6 +829,38 @@ showing at a glance: active/disabled, which adjudicator profile is wired
 (amber warning when falling back to the raw API), mode · preset, and this
 chat's actor/thread counts.
 
+## What is an attempt? — declarations arm, attempts roll
+
+The referee only rolls what is actually **attempted right now**. A message
+that taunts, boasts, negotiates, declares intent ("I will…", "perhaps I'll
+be the third"), renounces an option ("I'm not going to use my bankai"),
+draws or sheathes a weapon, takes a stance or position, powers up without
+releasing anything, asks the narrator a directorial question ("what would
+he do…", intervention windows, bracketed notes), or recaps what earlier
+narration already settled — **attempts nothing**, and nothing is rolled.
+
+When such a message clearly opens a fight (both sides squared up, steel
+drawn, the duel accepted), the duel **arms without a roll**: the HUD shows
+round 0, a *DUEL JOINED* directive binds the storyteller to the brink — no
+blow has landed, nothing has succeeded or failed — and the **first
+committed attempt becomes round 1**. An actual attack that opens combat (a
+lunge, a shot, a power unleashed at someone) still arms and resolves round
+1 in one turn, exactly as before. A duel always arms in a **combat**
+domain: an opener the referee classified as talk can never create a
+"social duel" — the fight's weapons decide, defaulting to melee.
+
+Inside a fight the same line holds both ways: while the opponent presses,
+a player who only talks or hesitates is still in an exchange at negative
+circumstance — **words do not parry steel**, so you cannot stall a
+pressing foe by monologuing. But a mutual standoff — both circling,
+talking, measuring, nobody committing — is a lull: no roll, no round.
+
+Every verdict also carries a plain meaning now, in the log and the result
+toasts: SUCCESS WITH COST = "succeeds, but with a proportionate cost",
+TRADE = "both land real hits — mutual damage", SETBACK = "fails, but
+forward — the loss opens a real next move", and so on. A bare tier name is
+never a mystery.
+
 ## Fight styles — tracked vs outcome-only
 
 **Outcome feel → Fights** picks how combat resolves:
@@ -874,12 +906,12 @@ where the two match behave exactly as before.
 
 ## Tests
 
-`tests/` contains 52 suites covering every invariant: the probability
+`tests/` contains 53 suites covering every invariant: the probability
 curve, tier slicing per preset, exchange effects, full battles to
 conclusion, snapshot rewinds, event tiers, thread ladders, memory-collector
-coverage, gate behavior, player identity (story name vs persona label), and
+coverage, gate behavior, player identity (story name vs persona label),
 the outcome-only fight style (verdicts without health or an engine-called
-end).
+end), and fight-or-not intelligence (declarations arm, attempts roll).
 Run them with Node (no dependencies):
 `sh tests/run_all.sh`. Any future change should keep them green.
 

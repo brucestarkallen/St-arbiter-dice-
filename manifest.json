@@ -6,7 +6,7 @@
     "js": "index.js",
     "css": "style.css",
     "author": "brucestarkallen",
-    "version": "0.32.0",
+    "version": "0.33.0",
     "homePage": "https://github.com/brucestarkallen/SillyTavern-Arbiter-Fight-and-Battle",
     "auto_update": false,
     "generate_interceptor": "arbiterInterceptor"
